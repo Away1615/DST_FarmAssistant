@@ -3,8 +3,8 @@ local Values = require("mosswork").Values
 local M = {}
 
 M.MOD_ID = "mosswork.planting_assistant"
-M.MOD_VERSION = "0.17.0"
-M.MOSSWORK_API_VERSION = 3
+M.MOD_VERSION = "0.1.0"
+M.MOSSWORK_API_VERSION = 1
 
 M.RPC_NAMESPACE = "mosswork.planting_assistant"
 M.RPC_PLANT = "plant"

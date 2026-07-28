@@ -1,40 +1,134 @@
-local is_chinese = locale == "zh"
-    or locale == "zhr"
-    or locale == "zht"
+local LANGUAGE_BY_LOCALE = {
+    zh = "zh",
+    zhr = "zh",
+    zht = "zh",
+    es = "es",
+    mex = "es",
+    ru = "ru",
+    fr = "fr",
+    de = "de",
+    ja = "ja",
+    jp = "ja",
+    ko = "ko",
+    kr = "ko",
+}
 
-local function T(english, chinese)
-    return is_chinese and chinese or english
-end
-
-name = T("Planting Assistant", "种植助手")
-description = T(
-    [[
+local TRANSLATIONS = {
+    en = {
+        name = "Planting Assistant",
+        description = [[
 Server-authoritative batch planting assistant.
 
-While holding a supported transplant:
 Ctrl + Mouse Wheel: adjust rows
 Alt + Mouse Wheel: adjust columns
-Right Mouse Button: confirm batch planting
+Right Mouse Button: confirm
 
-The client previews the layout. The character first moves into range, then the server recalculates and validates the entire layout over multiple frames. After one planting animation, valid positions are planted up to the available inventory count while blocked positions are skipped.
-Players can use a fixed automatic spacing that evenly fills each tile or choose a personal manual spacing from 1 to 4 world units in the Mosswork settings center.
-Requires Mosswork for the shared language, profile, and settings infrastructure.
+Previews the layout, moves the character into range, plays one action, and plants valid positions while skipping blocked points.
+Requires Mosswork.
 ]],
-    [[
+    },
+    zh = {
+        name = "种植助手",
+        description = [[
 服务端权威的批量种植助手。
 
-手持支持的移植作物时：
 Ctrl + 鼠标滚轮：调整行数
 Alt + 鼠标滚轮：调整列数
-鼠标右键：确认批量种植
+鼠标右键：确认
 
-客户端负责预览；角色先移动到目标区域，服务器再重新计算、全局分帧预检，并在一次角色动作后按当前库存数量跳过阻挡点、批量部署其余位置。
-玩家可以在 Mosswork 设置中心使用自动计算且整齐填满每块地皮的固定作物间距，或保存 1 至 4 个世界单位的个人手动间距。
-依赖 Mosswork 提供统一语言、玩家档案和设置入口。
-]]
-)
+预览阵列，让角色实际移动到范围内，只播放一次动作，并跳过阻挡点种下其他有效位置。
+依赖 Mosswork。
+]],
+    },
+    es = {
+        name = "Asistente de plantación",
+        description = [[
+Asistente de plantación en lote controlado por el servidor.
+
+Ctrl + Rueda del ratón: ajustar filas
+Alt + Rueda del ratón: ajustar columnas
+Botón derecho: confirmar
+
+Previsualiza la distribución, acerca al personaje, reproduce una acción y planta las posiciones válidas omitiendo los puntos bloqueados.
+Requiere Mosswork.
+]],
+    },
+    ru = {
+        name = "Помощник по посадке",
+        description = [[
+Серверный помощник для массовой посадки.
+
+Ctrl + Колесо мыши: изменить число строк
+Alt + Колесо мыши: изменить число столбцов
+Правая кнопка мыши: подтвердить
+
+Показывает раскладку, подводит персонажа, воспроизводит одно действие и засаживает допустимые точки, пропуская препятствия.
+Требуется Mosswork.
+]],
+    },
+    fr = {
+        name = "Assistant de plantation",
+        description = [[
+Assistant de plantation groupée contrôlé par le serveur.
+
+Ctrl + Molette : régler les lignes
+Alt + Molette : régler les colonnes
+Bouton droit : confirmer
+
+Affiche la disposition, déplace le personnage à portée, joue une seule action et plante les positions valides en ignorant les points bloqués.
+Nécessite Mosswork.
+]],
+    },
+    de = {
+        name = "Pflanzassistent",
+        description = [[
+Servergesteuerter Assistent für Gruppenpflanzungen.
+
+Strg + Mausrad: Zeilen anpassen
+Alt + Mausrad: Spalten anpassen
+Rechte Maustaste: bestätigen
+
+Zeigt die Anordnung, bewegt die Figur in Reichweite, spielt eine Aktion ab und bepflanzt gültige Positionen unter Auslassung blockierter Punkte.
+Benötigt Mosswork.
+]],
+    },
+    ja = {
+        name = "植え付けアシスタント",
+        description = [[
+サーバー管理の一括植え付けアシスタントです。
+
+Ctrl + マウスホイール：行数を変更
+Alt + マウスホイール：列数を変更
+右クリック：確定
+
+配置をプレビューし、キャラクターを範囲内へ移動させ、1 回の動作で障害物を避けながら有効な位置へ植え付けます。
+Mosswork が必要です。
+]],
+    },
+    ko = {
+        name = "심기 도우미",
+        description = [[
+서버 권한 방식의 일괄 심기 도우미입니다.
+
+Ctrl + 마우스 휠: 행 수 조절
+Alt + 마우스 휠: 열 수 조절
+마우스 오른쪽 버튼: 확인
+
+배치를 미리 보여 주고 캐릭터를 범위 안으로 이동시킨 뒤, 한 번의 동작으로 막힌 지점을 건너뛰며 유효한 위치에 심습니다.
+Mosswork가 필요합니다.
+]],
+    },
+}
+
+local language = LANGUAGE_BY_LOCALE[
+    type(locale) == "string" and string.lower(locale) or ""
+] or "en"
+local selected = TRANSLATIONS[language]
+
+name = selected.name
+description = selected.description
 author = "Nooobad"
-version = "0.17.0"
+version = "0.1.0"
 
 icon_atlas = "modicon.xml"
 icon = "modicon.tex"
