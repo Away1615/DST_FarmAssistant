@@ -1,4 +1,5 @@
 local require = GLOBAL.require
+local setmetatable = GLOBAL.setmetatable
 
 PrefabFiles = {
     "mosswork_pa_plant_marker",
@@ -9,6 +10,9 @@ local Mosswork = require("mosswork")
 local Shared = require("mosswork/planting_assistant/shared")
 local Layout = require("mosswork/planting_assistant/layout")
 local I18N = require("mosswork/planting_assistant/i18n")
+local Callback = Mosswork.Callback
+local Log = Mosswork.Log.Create(Shared.MOD_ID)
+local MossworkRegistry = require("mosswork/registry")
 
 Mosswork.AssertAPIVersion(
     Shared.MOSSWORK_API_VERSION,
@@ -26,8 +30,8 @@ local function ExecuteBatchPlantAction(action)
     return Server.ExecuteBatchAction(action)
 end
 
-local function ExecuteMoveAction()
-    return true
+local function ExecuteMoveAction(action)
+    return Server.BeginPlantRequest(action)
 end
 
 local PlanAction = AddAction(
@@ -91,8 +95,7 @@ local function PreparePlanAction(action)
             request.z,
             request.rows,
             request.columns,
-            request.prefab,
-            request.plant_spacing
+            request.prefab
         )
     else
         SendModRPCToServer(
@@ -102,12 +105,12 @@ local function PreparePlanAction(action)
             request.z,
             request.rows,
             request.columns,
-            request.prefab,
-            request.plant_spacing
+            request.prefab
         )
     end
 end
 PlanAction.pre_action_cb = PreparePlanAction
+MoveAction.pre_action_cb = PreparePlanAction
 
 Server.SetBatchAction(BatchPlantAction)
 
@@ -260,8 +263,11 @@ AddPlayerPostInit(function(player)
     player:DoTaskInTime(0, InstallActionHandlersForPlayer)
 end)
 
-local function IsSupportedDeployable(item)
-    if item == nil or Shared.GetPlant(item.prefab) == nil then
+local supported_plantable_cache =
+    setmetatable({}, { __mode = "k" })
+
+local function EvaluateSupportedPlantable(item)
+    if not Shared.IsInventoryPlantable(item) then
         return false
     end
 
@@ -269,17 +275,98 @@ local function IsSupportedDeployable(item)
         and item.replica.inventoryitem
         or nil
     if inventory_item ~= nil
-        and inventory_item.DeploySpacingRadius ~= nil
-        and Shared.IsValidSpacing(inventory_item:DeploySpacingRadius()) then
-        return true
+        and inventory_item.DeploySpacingRadius ~= nil then
+        local completed, spacing, issue = Callback.Run(
+            "action replica DeploySpacingRadius",
+            inventory_item.DeploySpacingRadius,
+            {
+                timeout_ms = Shared.PLANT_QUERY_CALLBACK_TIMEOUT_MS,
+                instruction_limit =
+                    Shared.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT,
+                hook_interval = Shared.PLANT_CALLBACK_HOOK_INTERVAL,
+                quarantine_seconds = Shared.CLIENT_PLANT_METADATA_RETRY_TIME,
+            },
+            inventory_item
+        )
+        if completed
+            and issue == nil
+            and Shared.IsValidSpacing(spacing) then
+            return true
+        end
     end
 
     local deployable = item.components ~= nil
         and item.components.deployable
         or nil
-    return deployable ~= nil
-        and deployable.DeploySpacingRadius ~= nil
-        and Shared.IsValidSpacing(deployable:DeploySpacingRadius())
+    if deployable == nil or deployable.DeploySpacingRadius == nil then
+        return false
+    end
+
+    local completed, spacing, issue = Callback.Run(
+        "action component DeploySpacingRadius",
+        deployable.DeploySpacingRadius,
+        {
+            timeout_ms = Shared.PLANT_QUERY_CALLBACK_TIMEOUT_MS,
+            instruction_limit = Shared.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT,
+            hook_interval = Shared.PLANT_CALLBACK_HOOK_INTERVAL,
+            quarantine_seconds = Shared.CLIENT_PLANT_METADATA_RETRY_TIME,
+        },
+        deployable
+    )
+    return completed
+        and issue == nil
+        and Shared.IsValidSpacing(spacing)
+end
+
+local function IsSupportedPlantable(item)
+    if item == nil then
+        return false
+    end
+
+    local now = GetStaticTime()
+    local cached = supported_plantable_cache[item]
+    if cached ~= nil
+        and (
+            (
+                cached.slow
+                and now - cached.checked_at
+                    < Shared.CLIENT_PLANT_METADATA_RETRY_TIME
+            )
+            or (
+                not cached.slow
+                and now - cached.checked_at
+                    < Shared.CLIENT_PLANT_METADATA_CACHE_TIME
+            )
+        ) then
+        return cached.supported
+    end
+
+    local started_at = type(GetTimeReal) == "function"
+        and GetTimeReal()
+        or nil
+    local supported = EvaluateSupportedPlantable(item)
+    local finished_at = type(GetTimeReal) == "function"
+        and GetTimeReal()
+        or nil
+    local slow = started_at ~= nil
+        and finished_at ~= nil
+        and finished_at - started_at
+            >= Shared.PLANT_QUERY_CALLBACK_SLOW_THRESHOLD_MS
+    if slow then
+        Log:Warn(
+            "slow action plant metadata prefab=%s elapsed_ms=%.2f;"
+                .. " result accepted",
+            tostring(item.prefab),
+            finished_at - started_at
+        )
+    end
+
+    supported_plantable_cache[item] = {
+        checked_at = now,
+        slow = slow,
+        supported = supported,
+    }
+    return supported
 end
 
 local function IsPlanningStartInRange(doer, x, z)
@@ -314,7 +401,7 @@ end
 
 local function AddPlantPointAction(item, doer, point, actions, right)
     if not right
-        or not IsSupportedDeployable(item)
+        or not IsSupportedPlantable(item)
         or point == nil then
         return
     end
@@ -330,7 +417,7 @@ end
 
 local function AddPlantTargetAction(item, doer, target, actions, right)
     if not right
-        or not IsSupportedDeployable(item)
+        or not IsSupportedPlantable(item)
         or target == nil
         or not target:IsValid()
         or target.Transform == nil then
@@ -368,8 +455,7 @@ AddModRPCHandler(
         z,
         rows,
         columns,
-        prefab,
-        plant_spacing
+        prefab
     )
         Server.HandlePlantRequest(
             player,
@@ -378,8 +464,7 @@ AddModRPCHandler(
             z,
             rows,
             columns,
-            prefab,
-            plant_spacing
+            prefab
         )
     end
 )
@@ -418,4 +503,4 @@ local registration = {
 if Client ~= nil then
     registration.settings = Client.GetSettingsDefinition()
 end
-Mosswork.RegisterMod(registration)
+MossworkRegistry.RegisterOfficial(registration)

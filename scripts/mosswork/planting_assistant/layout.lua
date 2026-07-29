@@ -16,60 +16,31 @@ function M.GetAnchorAtPoint(x, z)
     return center_x - half_tile, center_z - half_tile
 end
 
-local function CalculateTileCount(dimension, spacing)
-    local footprint = math.max(0, dimension * spacing)
-    local adjusted_footprint = math.max(
-        0,
-        footprint - Shared.LAYOUT_EPSILON
-    )
-    return math.max(
-        1,
-        math.ceil(adjusted_footprint / Shared.TILE_SIZE)
-    )
-end
-
-function M.BuildFromAnchor(anchor_x, anchor_z, rows, columns, spacing)
-    rows = Shared.ClampDimension(rows)
-    columns = Shared.ClampDimension(columns)
+function M.BuildSpecFromAnchor(
+    anchor_x,
+    anchor_z,
+    rows,
+    columns,
+    spacing
+)
+    anchor_x = tonumber(anchor_x)
+    anchor_z = tonumber(anchor_z)
+    rows = tonumber(rows)
+    columns = tonumber(columns)
     spacing = tonumber(spacing)
-
     if not Shared.IsFiniteCoordinate(anchor_x)
         or not Shared.IsFiniteCoordinate(anchor_z)
         or not Shared.IsValidLayoutFootprint(rows, columns, spacing) then
         return nil
     end
 
-    anchor_x = tonumber(anchor_x)
-    anchor_z = tonumber(anchor_z)
-    if anchor_x == nil or anchor_z == nil then
+    local tile_rows = Shared.GetLayoutTileCount(rows, spacing)
+    local tile_columns = Shared.GetLayoutTileCount(columns, spacing)
+    if tile_rows == nil
+        or tile_columns == nil
+        or tile_rows > Shared.MAX_LAYOUT_TILES_PER_AXIS
+        or tile_columns > Shared.MAX_LAYOUT_TILES_PER_AXIS then
         return nil
-    end
-
-    local first_offset = spacing * 0.5
-    local points = {}
-    for row = 1, rows do
-        for column = 1, columns do
-            points[#points + 1] = {
-                index = #points + 1,
-                row = row,
-                column = column,
-                x = anchor_x + first_offset + (column - 1) * spacing,
-                z = anchor_z + first_offset + (row - 1) * spacing,
-            }
-        end
-    end
-
-    local tile_rows = CalculateTileCount(rows, spacing)
-    local tile_columns = CalculateTileCount(columns, spacing)
-    local tiles = {}
-
-    for tile_row = 1, tile_rows do
-        for tile_column = 1, tile_columns do
-            tiles[#tiles + 1] = {
-                x = anchor_x + (tile_column - 0.5) * Shared.TILE_SIZE,
-                z = anchor_z + (tile_row - 0.5) * Shared.TILE_SIZE,
-            }
-        end
     end
 
     return {
@@ -78,59 +49,84 @@ function M.BuildFromAnchor(anchor_x, anchor_z, rows, columns, spacing)
         rows = rows,
         columns = columns,
         spacing = spacing,
-        points = points,
-        tiles = tiles,
+        candidate_count = rows * columns,
+        tile_rows = tile_rows,
+        tile_columns = tile_columns,
+        tile_count = tile_rows * tile_columns,
     }
 end
 
-function M.BuildTraversalOrder(layout)
-    local points = {}
-    if layout == nil then
-        return points
-    end
-
-    for row = 1, layout.rows do
-        local first_index = (row - 1) * layout.columns + 1
-        local last_index = first_index + layout.columns - 1
-        if row % 2 == 1 then
-            for index = first_index, last_index do
-                points[#points + 1] = layout.points[index]
-            end
-        else
-            for index = last_index, first_index, -1 do
-                points[#points + 1] = layout.points[index]
-            end
-        end
-    end
-    return points
-end
-
-function M.HasPlannedConflict(planted_points, point, minimum_spacing)
-    if type(planted_points) ~= "table"
-        or point == nil
-        or not Shared.IsValidSpacing(minimum_spacing) then
-        return true
-    end
-
-    local minimum_distance_sq = minimum_spacing * minimum_spacing
-    for _, planted in ipairs(planted_points) do
-        local delta_x = point.x - planted.x
-        local delta_z = point.z - planted.z
-        if delta_x * delta_x + delta_z * delta_z
-                + Shared.LAYOUT_EPSILON < minimum_distance_sq then
-            return true
-        end
-    end
-    return false
-end
-
-function M.Build(x, z, rows, columns, spacing)
+function M.BuildSpec(x, z, rows, columns, spacing)
     local anchor_x, anchor_z = M.GetAnchorAtPoint(x, z)
     if anchor_x == nil or anchor_z == nil then
         return nil
     end
 
-    return M.BuildFromAnchor(anchor_x, anchor_z, rows, columns, spacing)
+    return M.BuildSpecFromAnchor(
+        anchor_x,
+        anchor_z,
+        rows,
+        columns,
+        spacing
+    )
+end
+
+function M.GetTraversalPoint(layout, traversal_index)
+    if layout == nil then
+        return nil
+    end
+
+    traversal_index = tonumber(traversal_index)
+    if traversal_index == nil
+        or traversal_index ~= math.floor(traversal_index)
+        or traversal_index < 1
+        or traversal_index > layout.candidate_count then
+        return nil
+    end
+
+    local row = math.floor((traversal_index - 1) / layout.columns) + 1
+    local row_offset = (traversal_index - 1) % layout.columns
+    local column = row % 2 == 1
+        and row_offset + 1
+        or layout.columns - row_offset
+    local first_offset = layout.spacing * 0.5
+
+    return {
+        index = (row - 1) * layout.columns + column,
+        traversal_index = traversal_index,
+        row = row,
+        column = column,
+        x = layout.anchor_x
+            + first_offset
+            + (column - 1) * layout.spacing,
+        z = layout.anchor_z
+            + first_offset
+            + (row - 1) * layout.spacing,
+    }
+end
+
+function M.GetTile(layout, tile_index)
+    if layout == nil then
+        return nil
+    end
+
+    tile_index = tonumber(tile_index)
+    if tile_index == nil
+        or tile_index ~= math.floor(tile_index)
+        or tile_index < 1
+        or tile_index > layout.tile_count then
+        return nil
+    end
+
+    local tile_row =
+        math.floor((tile_index - 1) / layout.tile_columns) + 1
+    local tile_column = (tile_index - 1) % layout.tile_columns + 1
+    return {
+        x = layout.anchor_x
+            + (tile_column - 0.5) * Shared.TILE_SIZE,
+        z = layout.anchor_z
+            + (tile_row - 0.5) * Shared.TILE_SIZE,
+    }
 end
 
 return M

@@ -1,29 +1,61 @@
 local Shared = require("mosswork/planting_assistant/shared")
 
-local function SetPlant(inst, prefab)
-    if inst.current_prefab == prefab then
+local function GetSourceVisual(source_item)
+    local anim_state = source_item ~= nil and source_item.AnimState or nil
+    if anim_state == nil
+        or anim_state.GetBankHash == nil
+        or anim_state.GetBuild == nil then
+        return nil
+    end
+
+    local build = anim_state:GetBuild()
+    if build == nil or build == "" then
+        return nil
+    end
+
+    return {
+        bank = anim_state:GetBankHash(),
+        build = build,
+        animation = "idle",
+        scale = 1,
+    }
+end
+
+local function SetPlant(inst, prefab, source_item)
+    local visual = Shared.GetPlantVisual(prefab) or GetSourceVisual(source_item)
+    local signature = visual ~= nil
+        and string.format(
+            "%s:%s:%s",
+            tostring(prefab),
+            tostring(visual.bank),
+            tostring(visual.build)
+        )
+        or tostring(prefab)
+    if inst.current_signature == signature then
+        inst:Show()
         return
     end
 
-    local plant = Shared.GetPlant(prefab)
-    if plant == nil then
+    inst.current_signature = signature
+    if visual == nil then
+        inst:Hide()
         return
     end
 
-    inst.current_prefab = prefab
-    inst.AnimState:SetBank(plant.bank)
-    inst.AnimState:SetBuild(plant.build)
-    inst.AnimState:PlayAnimation(plant.animation, false)
-    inst.Transform:SetScale(plant.scale, plant.scale, plant.scale)
+    inst:Show()
+    inst.AnimState:SetBank(visual.bank)
+    inst.AnimState:SetBuild(visual.build)
+    inst.AnimState:PlayAnimation(visual.animation, false)
+    inst.Transform:SetScale(visual.scale, visual.scale, visual.scale)
 end
 
 local function SetPreviewState(inst, preview_state)
     if preview_state == "blocked" then
         inst.AnimState:SetMultColour(1, 0.18, 0.18, 0.68)
         inst.AnimState:SetAddColour(0.22, 0.02, 0.02, 0)
-    elseif preview_state == "missing" then
-        inst.AnimState:SetMultColour(0.48, 0.48, 0.48, 0.48)
-        inst.AnimState:SetAddColour(0.04, 0.04, 0.04, 0)
+    elseif preview_state == "unchecked" then
+        inst.AnimState:SetMultColour(1, 0.78, 0.2, 0.5)
+        inst.AnimState:SetAddColour(0.12, 0.08, 0.01, 0)
     else
         inst.AnimState:SetMultColour(0.25, 1, 0.25, 0.58)
         inst.AnimState:SetAddColour(0.03, 0.18, 0.03, 0)

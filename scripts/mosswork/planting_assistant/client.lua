@@ -2,6 +2,9 @@ local Mosswork = require("mosswork")
 local Shared = require("mosswork/planting_assistant/shared")
 local Layout = require("mosswork/planting_assistant/layout")
 local I18N = require("mosswork/planting_assistant/i18n")
+local Callback = Mosswork.Callback
+local Log = Mosswork.Log.Create(Shared.MOD_ID)
+local MossworkProfile = require("mosswork/profile")
 local Values = Mosswork.Values
 
 local M = {}
@@ -16,48 +19,34 @@ local function GetDefaultLocalSettings()
         default_rows = Shared.DEFAULT_ROWS,
         default_columns = Shared.DEFAULT_COLUMNS,
         placement_grid_opacity = Shared.PLACEMENT_GRID_OPACITY,
-        plant_spacing = Shared.PLANT_SPACING_AUTO,
     }
 end
 
-local function GetSettingsFootprintSpacing(setting)
-    return setting == Shared.PLANT_SPACING_AUTO and nil or tonumber(setting)
-end
-
-local function NormalizeLocalSettings(settings, changed_key)
+local function NormalizeLocalSettings(settings)
     settings = type(settings) == "table" and settings or {}
     local defaults = GetDefaultLocalSettings()
-    local plant_spacing = Shared.NormalizePlantSpacingSetting(
-        settings.plant_spacing
-    )
-    local preferred = changed_key == "default_rows" and "rows"
-        or changed_key == "default_columns" and "columns"
-        or nil
-    local rows, columns = Shared.ClampLayoutDimensions(
-        settings.default_rows or defaults.default_rows,
-        settings.default_columns or defaults.default_columns,
-        GetSettingsFootprintSpacing(plant_spacing),
-        preferred
-    )
 
     return {
-        default_rows = rows,
-        default_columns = columns,
+        default_rows = Shared.ClampDimension(
+            settings.default_rows or defaults.default_rows
+        ),
+        default_columns = Shared.ClampDimension(
+            settings.default_columns or defaults.default_columns
+        ),
         placement_grid_opacity = Values.ClampNumber(
             settings.placement_grid_opacity,
             0,
             1,
             defaults.placement_grid_opacity
         ),
-        plant_spacing = plant_spacing,
     }
 end
 
-local function NormalizeSettingsValues(settings, changed_key)
-    return NormalizeLocalSettings(settings, changed_key)
+local function NormalizeSettingsValues(settings)
+    return NormalizeLocalSettings(settings)
 end
 
-local profile_store = Mosswork.Profile.Create(
+local profile_store = MossworkProfile.CreateOfficial(
     Shared.MOD_ID,
     {
         defaults = GetDefaultLocalSettings,
@@ -81,14 +70,74 @@ local state = {
     request_id = 0,
     active_request_id = nil,
     movement_deadline = 0,
+    server_deadline = 0,
     request_phase = nil,
     plan_action_seen = false,
     plan_action_missing_since = 0,
     plan_action_grace_until = 0,
-    last_validation_time = -math.huge,
     hidden_native_placer = nil,
     hidden_native_placer_scale = nil,
+    cached_plant_item = nil,
+    cached_plant_spacing = nil,
+    cached_native_spacing = nil,
+    cached_plant_checked_at = -math.huge,
+    cached_plant_slow = false,
 }
+
+local FAILURE_MESSAGE_KEYS = {
+    rate_limited = "failure.rate_limited",
+    busy = "failure.busy",
+    server_busy = "failure.server_busy",
+    no_inventory = "failure.no_inventory",
+    no_plantable_positions = "failure.no_positions",
+    too_far = "failure.too_far",
+    not_at_target = "failure.too_far",
+    moved_away = "failure.too_far",
+    active_item_changed = "failure.selection_changed",
+    spacing_changed = "failure.selection_changed",
+    target_changed = "failure.selection_changed",
+    request_expired = "failure.timeout",
+    batch_timeout = "failure.timeout",
+    player_unavailable = "failure.unavailable",
+    action_interrupted = "failure.interrupted",
+    layout_too_large = "failure.layout_too_large",
+    invalid_request = "failure.invalid",
+    not_deployable = "failure.invalid",
+    invalid_ground = "failure.invalid",
+    internal_error = "failure.internal",
+    deploy_failed = "failure.internal",
+    deploy_state_unknown = "failure.internal",
+    remove_failed = "failure.internal",
+    rollback_failed = "failure.internal",
+    action_unavailable = "failure.internal",
+    plantable_unavailable = "failure.plantable_unavailable",
+}
+
+local SILENT_FAILURE_REASONS = {
+    no_inventory = true,
+    no_plantable_positions = true,
+    too_far = true,
+    not_at_target = true,
+    moved_away = true,
+}
+
+local function ShowFailureMessage(reason)
+    if SILENT_FAILURE_REASONS[reason] then
+        return
+    end
+
+    local key = FAILURE_MESSAGE_KEYS[reason] or "failure.generic"
+    local message = string.format(
+        "%s: %s",
+        I18N.Translate("mod.name"),
+        I18N.Translate(key)
+    )
+    if type(Networking_SystemMessage) == "function" then
+        Networking_SystemMessage(message)
+    else
+        print("[Mosswork] " .. message)
+    end
+end
 
 local function RemoveMarkers(markers)
     for index, marker in ipairs(markers) do
@@ -103,12 +152,12 @@ local function RemoveWorldMarkers()
     RemoveMarkers(state.plant_markers)
     RemoveMarkers(state.tile_markers)
     state.current = nil
-    state.last_validation_time = -math.huge
 end
 
 local function ClearRequestState()
     state.active_request_id = nil
     state.movement_deadline = 0
+    state.server_deadline = 0
     state.request_phase = nil
     state.plan_action_seen = false
     state.plan_action_missing_since = 0
@@ -121,13 +170,20 @@ local function IsRequestPending()
     end
 
     if state.request_phase == "server" then
-        return true
+        if GetStaticTime() < state.server_deadline then
+            return true
+        end
+
+        ShowFailureMessage("batch_timeout")
+        ClearRequestState()
+        return false
     end
 
     if GetStaticTime() < state.movement_deadline then
         return true
     end
 
+    ShowFailureMessage("request_expired")
     ClearRequestState()
     return false
 end
@@ -145,6 +201,17 @@ local function IsGameplayScreenAvailable()
     return TheFrontEnd:GetActiveScreen() == player.HUD
 end
 
+local function GetRealTimeMilliseconds()
+    return type(GetTimeReal) == "function" and GetTimeReal() or nil
+end
+
+local function HasClientPreviewTime(started_at)
+    return started_at == nil
+        or type(GetTimeReal) ~= "function"
+        or GetTimeReal() - started_at
+            < Shared.CLIENT_PREVIEW_TIME_BUDGET_MS
+end
+
 local function GetDeploySpacing(item)
     local inventory_item = item ~= nil
         and item.replica ~= nil
@@ -154,25 +221,78 @@ local function GetDeploySpacing(item)
         return nil
     end
 
-    local spacing = inventory_item:DeploySpacingRadius()
-    return Shared.IsValidSpacing(spacing) and spacing or nil
+    local completed, spacing, issue = Callback.Run(
+        "client plant DeploySpacingRadius",
+        inventory_item.DeploySpacingRadius,
+        {
+            timeout_ms = Shared.PLANT_QUERY_CALLBACK_TIMEOUT_MS,
+            instruction_limit =
+                Shared.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT,
+            hook_interval = Shared.PLANT_CALLBACK_HOOK_INTERVAL,
+            quarantine_seconds = Shared.CLIENT_PLANT_METADATA_RETRY_TIME,
+        },
+        inventory_item
+    )
+    return completed
+        and issue == nil
+        and Shared.IsValidSpacing(spacing)
+        and spacing
+        or nil
 end
 
 local function GetActivePlant()
     local player = state.player
     local inventory = player ~= nil and player.replica ~= nil and player.replica.inventory or nil
     local item = inventory ~= nil and inventory:GetActiveItem() or nil
+    local now = GetStaticTime()
+    if item == state.cached_plant_item
+        and (
+            (
+                state.cached_plant_slow
+                and now - state.cached_plant_checked_at
+                    < Shared.CLIENT_PLANT_METADATA_RETRY_TIME
+            )
+            or (
+                not state.cached_plant_slow
+                and now - state.cached_plant_checked_at
+                    < Shared.CLIENT_PLANT_METADATA_CACHE_TIME
+            )
+        ) then
+        return item,
+            state.cached_plant_spacing,
+            state.cached_native_spacing
+    end
+
+    local started_at = GetRealTimeMilliseconds()
     local native_spacing = item ~= nil
-        and Shared.GetPlant(item.prefab) ~= nil
+        and Shared.IsInventoryPlantable(item)
         and GetDeploySpacing(item)
         or nil
     local spacing = native_spacing ~= nil
-        and Shared.ResolvePlantSpacing(
-            state.local_settings.plant_spacing,
-            native_spacing
-        )
+        and Shared.ResolvePlantSpacing(native_spacing)
         or nil
-    return item, spacing, native_spacing
+    local finished_at = GetRealTimeMilliseconds()
+    local callback_was_slow = started_at ~= nil
+        and finished_at ~= nil
+        and finished_at - started_at
+            >= Shared.PLANT_QUERY_CALLBACK_SLOW_THRESHOLD_MS
+    if callback_was_slow then
+        Log:Warn(
+            "slow client plant metadata prefab=%s elapsed_ms=%.2f;"
+                .. " result accepted",
+            item ~= nil and tostring(item.prefab) or "unknown",
+            finished_at - started_at
+        )
+    end
+
+    state.cached_plant_item = item
+    state.cached_plant_checked_at = now
+    state.cached_plant_slow = callback_was_slow
+    state.cached_native_spacing = native_spacing
+    state.cached_plant_spacing = spacing
+    return item,
+        state.cached_plant_spacing,
+        state.cached_native_spacing
 end
 
 local function ReplicaStackSize(item)
@@ -263,7 +383,22 @@ local function TrimMarkers(markers, wanted)
     end
 end
 
-local function CanClientDeploy(item, point)
+local function HideMarkers(markers)
+    for _, marker in ipairs(markers) do
+        if marker ~= nil and marker:IsValid() then
+            marker:Hide()
+        end
+    end
+end
+
+local function CanClientDeploy(item, point, current)
+    local now = GetStaticTime()
+    if current.validation_disabled_until ~= nil
+        and now < current.validation_disabled_until then
+        return nil
+    end
+    current.validation_disabled_until = nil
+
     local inventory_item = item ~= nil
         and item.replica ~= nil
         and item.replica.inventoryitem
@@ -273,41 +408,69 @@ local function CanClientDeploy(item, point)
         return false
     end
 
-    return inventory_item:CanDeploy(
+    local started_at = GetRealTimeMilliseconds()
+    local completed, can_deploy = pcall(
+        inventory_item.CanDeploy,
+        inventory_item,
         Vector3(point.x, 0, point.z),
         nil,
         state.player,
         0
-    ) == true
-end
-
-local function IsLayoutStartInRange(layout)
-    local player = state.player
-    if player == nil or layout == nil then
-        return false
+    )
+    local finished_at = GetRealTimeMilliseconds()
+    if not completed then
+        Log:Error(
+            "client plant CanDeploy failed prefab=%s error=%s",
+            item ~= nil and tostring(item.prefab) or "unknown",
+            tostring(can_deploy)
+        )
+        current.validation_disabled_until =
+            now + Shared.CLIENT_PLANT_METADATA_RETRY_TIME
+        return nil
     end
-
-    local player_x, _, player_z = player.Transform:GetWorldPosition()
-    local target_x = layout.anchor_x + Shared.TILE_SIZE * 0.5
-    local target_z = layout.anchor_z + Shared.TILE_SIZE * 0.5
-    local delta_x = target_x - player_x
-    local delta_z = target_z - player_z
-    local max_distance = Shared.MAX_REQUEST_DISTANCE
-    return delta_x * delta_x + delta_z * delta_z <= max_distance * max_distance
+    if started_at ~= nil
+        and finished_at ~= nil
+        and finished_at - started_at
+            >= Shared.PLANT_QUERY_CALLBACK_SLOW_THRESHOLD_MS
+        and now - current.last_slow_validation_log_time
+            >= Shared.CLIENT_PLANT_METADATA_RETRY_TIME then
+        current.last_slow_validation_log_time = now
+        Log:Warn(
+            "slow client plant CanDeploy prefab=%s elapsed_ms=%.2f;"
+                .. " result accepted",
+            item ~= nil and tostring(item.prefab) or "unknown",
+            finished_at - started_at
+        )
+    end
+    return can_deploy == true
 end
 
-local function IsSameLayout(current, prefab, spacing, anchor_x, anchor_z)
+local function IsSameLayout(
+    current,
+    item,
+    spacing,
+    inventory_count,
+    anchor_x,
+    anchor_z
+)
     return current ~= nil
-        and current.prefab == prefab
+        and current.item == item
         and math.abs(current.layout.spacing - spacing) <= Shared.LAYOUT_EPSILON
         and current.layout.rows == state.rows
         and current.layout.columns == state.columns
+        and current.inventory_count == inventory_count
         and math.abs(current.layout.anchor_x - anchor_x) <= Shared.LAYOUT_EPSILON
         and math.abs(current.layout.anchor_z - anchor_z) <= Shared.LAYOUT_EPSILON
 end
 
-local function RebuildLayout(item, spacing, anchor_x, anchor_z)
-    local layout = Layout.BuildFromAnchor(
+local function RebuildLayout(
+    item,
+    spacing,
+    inventory_count,
+    anchor_x,
+    anchor_z
+)
+    local layout = Layout.BuildSpecFromAnchor(
         anchor_x,
         anchor_z,
         state.rows,
@@ -318,77 +481,145 @@ local function RebuildLayout(item, spacing, anchor_x, anchor_z)
         return false
     end
 
-    for index, point in ipairs(layout.points) do
-        local marker = EnsurePlantMarker(index)
-        if marker ~= nil then
-            marker:SetPlant(item.prefab)
-            marker.Transform:SetPosition(point.x, 0, point.z)
-        end
-    end
-    TrimMarkers(state.plant_markers, #layout.points)
+    local preview_count = math.min(
+        layout.candidate_count,
+        inventory_count,
+        Shared.CLIENT_PREVIEW_MARKER_LIMIT
+    )
+    HideMarkers(state.plant_markers)
+    HideMarkers(state.tile_markers)
+    TrimMarkers(state.plant_markers, preview_count)
+    TrimMarkers(state.tile_markers, layout.tile_count)
 
-    for index, tile in ipairs(layout.tiles) do
+    for index = 1, layout.tile_count do
+        local tile = Layout.GetTile(layout, index)
         local marker = EnsureTileMarker(index)
-        if marker ~= nil then
+        if marker ~= nil and tile ~= nil then
+            marker:Show()
             marker.Transform:SetPosition(tile.x, 0, tile.z)
         end
     end
-    TrimMarkers(state.tile_markers, #layout.tiles)
 
     state.current = {
+        item = item,
         prefab = item.prefab,
         layout = layout,
-        traversal = Layout.BuildTraversalOrder(layout),
+        inventory_count = inventory_count,
+        preview_count = preview_count,
+        marker_build_index = 1,
+        validation_index = nil,
+        validation_inventory_count = 0,
+        simulated_plant_count = 0,
+        next_validation_time = -math.huge,
+        validation_disabled_until = nil,
+        last_slow_validation_log_time = -math.huge,
         preview_states = {},
     }
-    state.last_validation_time = -math.huge
     return true
 end
 
-local function RefreshValidation(item, native_spacing, force)
+local function BuildPlantMarkerSlice(item)
     local current = state.current
-    if current == nil or native_spacing == nil then
+    if current == nil then
+        return
+    end
+
+    local built = 0
+    local started_at = GetRealTimeMilliseconds()
+    while built < Shared.CLIENT_MARKERS_PER_TICK
+        and current.marker_build_index <= current.preview_count
+        and HasClientPreviewTime(started_at) do
+        local preview_index = current.marker_build_index
+        local point = Layout.GetTraversalPoint(
+            current.layout,
+            preview_index
+        )
+        local marker = EnsurePlantMarker(preview_index)
+        if marker ~= nil and point ~= nil then
+            marker:SetPlant(item.prefab, item)
+            marker:Show()
+            marker.Transform:SetPosition(point.x, 0, point.z)
+            marker:SetPreviewState("unchecked")
+        end
+
+        current.marker_build_index = preview_index + 1
+        built = built + 1
+    end
+end
+
+local function StartValidationCycle(current, now)
+    current.validation_index = 1
+    current.validation_inventory_count =
+        CountClientInventory(current.prefab)
+    current.simulated_plant_count = 0
+    current.next_validation_time = now
+end
+
+local function RefreshValidation(item, force)
+    local current = state.current
+    if current == nil
+        or current.marker_build_index <= current.preview_count then
         return
     end
 
     local now = GetStaticTime()
-    if not force and now - state.last_validation_time < Shared.VALIDATION_INTERVAL then
-        return
+    if force then
+        StartValidationCycle(current, now)
+    elseif current.validation_index == nil then
+        if now < current.next_validation_time then
+            return
+        end
+        StartValidationCycle(current, now)
     end
 
-    local inventory_count = CountClientInventory(current.prefab)
-    local simulated_plants = {}
-    local simulated_plant_count = 0
-    for _, point in ipairs(current.traversal) do
-        local can_deploy = CanClientDeploy(item, point)
+    local processed = 0
+    local started_at = GetRealTimeMilliseconds()
+    while processed < Shared.CLIENT_VALIDATION_POINTS_PER_TICK
+        and current.validation_index <= current.preview_count
+        and HasClientPreviewTime(started_at) do
+        local preview_index = current.validation_index
+        local point = Layout.GetTraversalPoint(
+            current.layout,
+            preview_index
+        )
+        ---@type boolean|nil
+        local can_deploy = false
+        if point ~= nil then
+            can_deploy = CanClientDeploy(item, point, current)
+        end
         local preview_state
         if not can_deploy then
-            preview_state = "blocked"
-        elseif simulated_plant_count >= inventory_count then
-            preview_state = "missing"
-        elseif Layout.HasPlannedConflict(
-            simulated_plants,
-            point,
-            native_spacing
-        ) then
-            preview_state = "blocked"
+            preview_state = can_deploy == nil and "unchecked" or "blocked"
+        elseif current.simulated_plant_count
+            >= current.validation_inventory_count then
+            preview_state = "hidden"
         else
-            simulated_plant_count = simulated_plant_count + 1
-            simulated_plants[#simulated_plants + 1] = point
+            current.simulated_plant_count =
+                current.simulated_plant_count + 1
             preview_state = "valid"
         end
 
-        local index = point.index
-        if current.preview_states[index] ~= preview_state then
-            current.preview_states[index] = preview_state
-            local marker = state.plant_markers[index]
+        if current.preview_states[preview_index] ~= preview_state then
+            current.preview_states[preview_index] = preview_state
+            local marker = state.plant_markers[preview_index]
             if marker ~= nil and marker:IsValid() then
-                marker:SetPreviewState(preview_state)
+                if preview_state == "hidden" then
+                    marker:Hide()
+                else
+                    marker:Show()
+                    marker:SetPreviewState(preview_state)
+                end
             end
         end
+
+        current.validation_index = preview_index + 1
+        processed = processed + 1
     end
 
-    state.last_validation_time = now
+    if current.validation_index > current.preview_count then
+        current.validation_index = nil
+        current.next_validation_time = now + Shared.VALIDATION_INTERVAL
+    end
 end
 
 local function RefreshPreview(force_validation)
@@ -408,6 +639,7 @@ local function RefreshPreview(force_validation)
         RemoveWorldMarkers()
         return
     end
+    local inventory_count = CountClientInventory(item.prefab)
     state.rows, state.columns = Shared.ClampLayoutDimensions(
         state.rows,
         state.columns,
@@ -420,7 +652,10 @@ local function RefreshPreview(force_validation)
         return
     end
 
-    local anchor_x, anchor_z = Layout.GetAnchorAtPoint(mouse_position.x, mouse_position.z)
+    local anchor_x, anchor_z = Layout.GetAnchorAtPoint(
+        mouse_position.x,
+        mouse_position.z
+    )
     if anchor_x == nil or anchor_z == nil then
         RemoveWorldMarkers()
         return
@@ -428,19 +663,27 @@ local function RefreshPreview(force_validation)
 
     local layout_changed = not IsSameLayout(
         state.current,
-        item.prefab,
+        item,
         spacing,
+        inventory_count,
         anchor_x,
         anchor_z
     )
-    if layout_changed and not RebuildLayout(item, spacing, anchor_x, anchor_z) then
+    if layout_changed
+        and not RebuildLayout(
+            item,
+            spacing,
+            inventory_count,
+            anchor_x,
+            anchor_z
+        ) then
         RemoveWorldMarkers()
         return
     end
 
+    BuildPlantMarkerSlice(item)
     RefreshValidation(
         item,
-        native_spacing,
         force_validation == true or layout_changed
     )
 end
@@ -528,7 +771,7 @@ local function RefreshNativePlacementVisuals()
     end
 end
 
-local function HasBufferedPlanAction()
+local function HasBufferedPlanningAction()
     local player = state.player
     if player == nil or not player:IsValid() then
         return false
@@ -543,9 +786,13 @@ local function HasBufferedPlanAction()
         action = player.components.locomotor.bufferedaction
     end
 
-    return action ~= nil
-        and action.action ~= nil
-        and action.action.id == Shared.ACTION_PLAN_ID
+    if action == nil or action.action == nil then
+        return false
+    end
+
+    local action_id = action.action.id
+    return action_id == Shared.ACTION_PLAN_ID
+        or action_id == Shared.ACTION_MOVE_ID
 end
 
 local function UpdatePendingPlanAction()
@@ -554,7 +801,13 @@ local function UpdatePendingPlanAction()
     end
 
     local now = GetStaticTime()
-    if HasBufferedPlanAction() then
+    if now >= state.movement_deadline then
+        ShowFailureMessage("request_expired")
+        ClearRequestState()
+        return
+    end
+
+    if HasBufferedPlanningAction() then
         state.plan_action_seen = true
         state.plan_action_missing_since = 0
         return
@@ -569,8 +822,11 @@ local function UpdatePendingPlanAction()
         return
     end
 
-    local cancel_delay = state.plan_action_seen and 5 or 2
+    local cancel_delay = state.plan_action_seen
+            and Shared.BATCH_HEARTBEAT_INTERVAL * 2 + 1
+        or 2
     if now - state.plan_action_missing_since >= cancel_delay then
+        ShowFailureMessage("action_interrupted")
         ClearRequestState()
     end
 end
@@ -603,22 +859,6 @@ for value = Shared.MIN_DIMENSION, Shared.MAX_DIMENSION do
         text = tostring(value),
         data = value,
     }
-end
-
-local function BuildSpacingOptions()
-    local options = {
-        {
-            text = I18N.Translate("settings.spacing_auto"),
-            data = Shared.PLANT_SPACING_AUTO,
-        },
-    }
-    for value = Shared.MIN_PLANT_SPACING, Shared.MAX_PLANT_SPACING do
-        options[#options + 1] = {
-            text = tostring(value),
-            data = value,
-        }
-    end
-    return options
 end
 
 local function BuildOpacityOptions()
@@ -749,7 +989,7 @@ function M.PreparePlantRequest(action)
         return nil
     end
 
-    local requested_layout = Layout.Build(
+    local requested_layout = Layout.BuildSpec(
         x,
         z,
         state.rows,
@@ -760,19 +1000,11 @@ function M.PreparePlantRequest(action)
         return nil
     end
 
-    local total = #requested_layout.points
-    if total > Shared.MAX_PLANTS_PER_BATCH then
-        return nil
-    end
-
-    if not IsLayoutStartInRange(requested_layout) then
-        return nil
-    end
-
     local request_id = NextRequestId()
     local now = GetStaticTime()
     state.active_request_id = request_id
     state.movement_deadline = now + Shared.REQUEST_TIMEOUT
+    state.server_deadline = 0
     state.request_phase = "moving"
     state.plan_action_seen = false
     state.plan_action_missing_since = 0
@@ -785,7 +1017,6 @@ function M.PreparePlantRequest(action)
         rows = requested_layout.rows,
         columns = requested_layout.columns,
         prefab = active_item.prefab,
-        plant_spacing = state.local_settings.plant_spacing,
     }
 end
 
@@ -856,6 +1087,8 @@ function M.ReceiveResult(request_id, reason)
     if reason == "started" or reason == "progress" then
         state.request_phase = "server"
         state.movement_deadline = 0
+        state.server_deadline =
+            GetStaticTime() + Shared.CLIENT_SERVER_SILENCE_TIMEOUT
         state.plan_action_missing_since = 0
         RefreshPreview(false)
         return
@@ -863,6 +1096,9 @@ function M.ReceiveResult(request_id, reason)
 
     ClearRequestState()
     RefreshPreview(true)
+    if reason ~= "success" then
+        ShowFailureMessage(reason)
+    end
 end
 
 function M.GetSettingsDefinition()
@@ -886,12 +1122,6 @@ function M.GetSettingsDefinition()
                 label = Translated("settings.local_columns"),
                 hover = Translated("settings.columns_tooltip"),
                 options = DIMENSION_OPTIONS,
-            },
-            {
-                key = "plant_spacing",
-                label = Translated("settings.plant_spacing"),
-                hover = Translated("settings.spacing_tooltip"),
-                options = BuildSpacingOptions,
             },
             {
                 key = "placement_grid_opacity",
