@@ -37,9 +37,9 @@ The server and every joining player must load compatible versions of both mods.
 5. Right-click to confirm.
 
 The default layout is `1 × 1`. The number of candidates allowed on each axis
-depends on the selected plant's automatic spacing: up to `36` at one world unit
-apart, `18` at two units, or `9` at four units. Width and height are each
-limited to `9` terrain tiles (`36` world units).
+depends on the selected plant's automatic spacing: up to `36` at `1`, `27` at
+`4/3`, `18` at `2`, or `9` at `4` world units. Width and height are each limited
+to `9` terrain tiles (`36` world units).
 
 There is no separate `81`-plant limit. Inventory and valid positions determine
 how many plants are actually consumed; the `9 × 9`-turf boundary is the layout
@@ -138,9 +138,10 @@ path.
   container, player inventory, or the player's feet. If a callback invalidates
   the item before failing, the state is unknown, so the batch stops and logs
   the incident. The mod never synthesizes a replacement item.
-- Mosswork's bounded callback executor remains limited to low-frequency client
-  metadata and extension UI work. Per-point `CanDeploy` and server `Deploy`
-  calls use ordinary protected calls to avoid instruction-hook overhead.
+- Mosswork's execution-budgeted callback runner remains limited to low-frequency
+  item/action metadata and extension UI work. Per-point `CanDeploy` and server
+  `Deploy` calls use ordinary protected calls to avoid instruction-hook
+  overhead.
 - Players must remain near the original action point during execution.
 - Busy, timeout, extension, and internal failures appear as localized system
   messages. Distance, inventory shortage, and no-valid-position outcomes stay
@@ -189,8 +190,9 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 5. 按鼠标右键确认。
 
 默认阵列为 `1 × 1`。每个方向允许的候选数量由自动间距决定：间距为
-1 个世界单位时最多 36 株，间距为 2 时最多 18 株，间距为 4 时最多
-9 株。阵列宽度和高度分别不能超过 9 块地皮（36 个世界单位）。
+`1` 个世界单位时最多 `36` 株，间距为 `4/3` 时最多 `27` 株，间距为
+`2` 时最多 `18` 株，间距为 `4` 时最多 `9` 株。阵列宽度和高度分别
+不能超过 9 块地皮（36 个世界单位）。
 
 不再另设 81 株上限。实际消耗数量由库存和有效位置决定，`9 × 9` 地皮
 范围是单次布局的安全边界。
@@ -268,17 +270,16 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
   批次最多为 8 个。
 - 进度心跳和停滞看门狗避免永久 busy。
 - 即使终止消息丢失，客户端也会通过心跳超时自动解除 busy。
-- 第三方种植物回调同时受墙钟时间和 Lua 指令预算约束，纯 Lua 死循环会被
-  中断，不会永久阻塞服务端。
-- 一次回调故障只终止当前请求；只有 60 秒内第二个独立请求再次触发同一
-  Prefab 的同一回调故障，才会将该回调隔离 60 秒。单个请求无法让某种
-  植物在全服被隔离。
-- Deploy 使用物品事务：回调失败后，要么确认原生种植已经提交，要么把
-  已取出的物品依次归还原容器、玩家库存或掉落在玩家脚下；回滚回调同样
-  受硬执行预算保护。如果回调先删除物品、随后抛错且原生种植点仍为空，
-  部署前保存的物品记录会用于重建并归还该物品。
-- DST 共享 Lua VM 中的原生 C 调用，以及主动替换自身 debug hook 的恶意
-  回调无法被抢占，只能在返回后记录超时。
+- 种植物元数据只针对当前物品实例解析一次并复用，只有实例变化时才重新
+  解析。逐点校验不会重复查询部署模式和间距。
+- 种植物回调抛错只终止当前请求。慢回调仅产生节流性能警告；只要成功
+  返回，结果仍被接受，也不会因此被隔离。
+- Deploy 遵循原生物品边界。部署失败且已取出的物品仍然有效时，会依次
+  尝试归还原容器、玩家物品栏或玩家脚下；如果回调在失败前使物品失效，
+  则状态未知，批次停止并记录日志。模组绝不会合成替代物品。
+- Mosswork 的带执行预算回调执行器只用于低频物品/动作元数据和扩展 UI；
+  逐点 `CanDeploy` 与服务端 `Deploy` 使用普通保护调用，避免指令 hook
+  的热路径开销。
 - 执行期间玩家必须留在原动作点附近。
 - 繁忙、超时、扩展回调和内部故障会以当前语言的系统消息通知对应玩家；
   距离过远、库存不足和无有效位置保持静默。
