@@ -82,6 +82,7 @@ local state = {
     cached_native_spacing = nil,
     cached_plant_checked_at = -math.huge,
     cached_plant_slow = false,
+    last_undo_request_time = -math.huge,
 }
 
 local FAILURE_MESSAGE_KEYS = {
@@ -121,12 +122,17 @@ local SILENT_FAILURE_REASONS = {
     moved_away = true,
 }
 
-local function ShowFailureMessage(reason)
-    if SILENT_FAILURE_REASONS[reason] then
-        return
-    end
+local UNDO_MESSAGE_KEYS = {
+    undo_success = "undo.success",
+    undo_unavailable = "undo.unavailable",
+    undo_expired = "undo.expired",
+    undo_changed = "undo.changed",
+    undo_unsupported = "undo.unsupported",
+    undo_busy = "undo.busy",
+    undo_internal = "undo.internal",
+}
 
-    local key = FAILURE_MESSAGE_KEYS[reason] or "failure.generic"
+local function ShowSystemMessage(key)
     local message = string.format(
         "%s: %s",
         I18N.Translate("mod.name"),
@@ -137,6 +143,15 @@ local function ShowFailureMessage(reason)
     else
         print("[Mosswork] " .. message)
     end
+end
+
+local function ShowFailureMessage(reason)
+    if SILENT_FAILURE_REASONS[reason] then
+        return
+    end
+
+    local key = FAILURE_MESSAGE_KEYS[reason] or "failure.generic"
+    ShowSystemMessage(key)
 end
 
 local function RemoveMarkers(markers)
@@ -885,6 +900,25 @@ local function IsModifierDown(key)
     return TheInput ~= nil and TheInput:IsKeyDown(key)
 end
 
+local function OnUndoKeyDown()
+    if not IsModifierDown(KEY_CTRL)
+        or not IsGameplayScreenAvailable()
+        or IsRequestPending() then
+        return
+    end
+
+    local now = GetStaticTime()
+    if now - state.last_undo_request_time
+        < Shared.UNDO_REQUEST_INTERVAL then
+        return
+    end
+    state.last_undo_request_time = now
+
+    SendModRPCToServer(
+        GetModRPC(Shared.RPC_NAMESPACE, Shared.RPC_UNDO)
+    )
+end
+
 local function CanHandlePlantingInput()
     if state.player == nil or state.player ~= ThePlayer or not IsGameplayScreenAvailable() then
         return false
@@ -1070,6 +1104,7 @@ function M.InstallInputHandlers()
 
     state.handlers_installed = true
     TheInput:AddMouseButtonHandler(OnMouseButton)
+    TheInput:AddKeyDownHandler(KEY_Z, OnUndoKeyDown)
 end
 
 function M.IsRequestPending()
@@ -1099,6 +1134,11 @@ function M.ReceiveResult(request_id, reason)
     if reason ~= "success" then
         ShowFailureMessage(reason)
     end
+end
+
+function M.ReceiveUndoResult(reason)
+    local key = UNDO_MESSAGE_KEYS[reason] or "undo.internal"
+    ShowSystemMessage(key)
 end
 
 function M.GetSettingsDefinition()

@@ -1,4 +1,5 @@
 local Shared = require("mosswork/planting_assistant/shared")
+local Undo = require("mosswork/planting_assistant/server_undo")
 local Log = require("mosswork").Log.Create(Shared.MOD_ID)
 
 local M = {}
@@ -647,6 +648,14 @@ function M.DeployOne(player, batch, point, item, metadata)
         local inventory_item = item.components.inventoryitem
         local previous_container = inventory_item:GetContainer()
         local previous_slot = inventory_item:GetSlotNum()
+        local undo_capture = Undo.BeginDeployment(
+            batch,
+            point,
+            nil,
+            false,
+            previous_container,
+            previous_slot
+        )
 
         local callback_ok, success, reason =
             RunPlantableCallback(
@@ -658,6 +667,10 @@ function M.DeployOne(player, batch, point, item, metadata)
             deploy_point,
             player,
             0
+        )
+        Undo.EndDeployment(
+            undo_capture,
+            callback_ok and success
         )
         if callback_ok and success then
             if item:IsValid()
@@ -710,6 +723,14 @@ function M.DeployOne(player, batch, point, item, metadata)
     end
 
     local removed_deployable = removed.components.deployable
+    local undo_capture = Undo.BeginDeployment(
+        batch,
+        point,
+        removed,
+        true,
+        previous_container,
+        previous_slot
+    )
     local callback_ok, success, reason =
         RunPlantableCallback(
         removed.prefab,
@@ -720,6 +741,10 @@ function M.DeployOne(player, batch, point, item, metadata)
         deploy_point,
         player,
         0
+    )
+    Undo.EndDeployment(
+        undo_capture,
+        callback_ok and success
     )
     if callback_ok and success then
         if removed:IsValid()

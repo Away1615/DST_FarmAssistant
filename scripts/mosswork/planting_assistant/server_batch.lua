@@ -1,6 +1,7 @@
 local Shared = require("mosswork/planting_assistant/shared")
 local Layout = require("mosswork/planting_assistant/layout")
 local Common = require("mosswork/planting_assistant/server_common")
+local Undo = require("mosswork/planting_assistant/server_undo")
 local Log = require("mosswork").Log.Create(Shared.MOD_ID)
 
 local M = {}
@@ -141,6 +142,7 @@ FinishBatch = function(player, reason)
     end
 
     Common.SendResult(player, batch.request_id, reason)
+    Undo.FinalizeBatch(player, batch)
     StopSchedulerIfIdle()
 end
 
@@ -433,6 +435,7 @@ ProcessPlantingSlice = function(player, batch, limit)
                 plant_metadata
             )
         if not success and reason ~= "blocked" then
+            Undo.MarkBatchUnsupported(batch)
             FinishBatch(player, reason or "deploy_failed")
             return processed
         end
@@ -447,6 +450,7 @@ ProcessPlantingSlice = function(player, batch, limit)
         processed = processed + 1
         TouchBatch(player, batch)
         if terminal_reason ~= nil then
+            Undo.MarkBatchUnsupported(batch)
             FinishBatch(player, terminal_reason)
             return processed
         end
@@ -485,6 +489,7 @@ local function RunBatchSlice(processor, player, batch, limit)
     local ok, used = pcall(processor, player, batch, limit)
     if not ok then
         Log:Error("batch scheduler failed: %s", used)
+        Undo.MarkBatchUnsupported(batch)
         FinishBatch(player, "internal_error")
         return 0
     end
