@@ -4,7 +4,7 @@
 
 Server-authoritative batch planting for Don't Starve Together.
 
-- Mod version: `0.2.0`
+- Mod version: `0.2.1`
 - Required base mod: `Mosswork`, API `1`
 - Author: `Nooobad`
 - License: [MIT](LICENSE)
@@ -35,7 +35,6 @@ The server and every joining player must load compatible versions of both mods.
 3. Hold `Ctrl` and use the mouse wheel to change rows.
 4. Hold `Alt` and use the mouse wheel to change columns.
 5. Right-click to confirm.
-6. Within five seconds after the batch finishes, press `Ctrl+Z` to undo it.
 
 The default layout is `1 × 1`. The number of candidates allowed on each axis
 depends on the selected plant's automatic spacing: up to `36` at `1`, `27` at
@@ -52,14 +51,6 @@ walks to every individual plant position.
 
 Planting Assistant does not replace left click, so original DST inventory drop
 and movement behavior remains available.
-
-Only the most recent completed batch is retained. Submitting another valid
-Planting Assistant batch clears the previous history; walking, opening the
-inventory, and other ordinary actions do not. Undo succeeds only while every
-recorded planted entity still has the same server GUID and remains at its
-original point. If any entity is gone, replaced, or moved, the whole batch is
-left unchanged. Changes that keep the same entity, such as fertilizing it
-within the five-second window, do not by themselves block undo.
 
 ### Preview
 
@@ -131,14 +122,6 @@ path.
 - Client input and preview are predictive only.
 - The server validates request IDs, active plantable items, distance,
   dimensions, derived spacing, inventory, and every deployment.
-- `Ctrl+Z` is accepted only from the gameplay screen without text-input focus.
-  The server keeps one five-second undo history per player, pre-validates the
-  complete batch, removes only the exact recorded GUIDs, and restores the
-  consumed items from their server save records.
-- Native and modded plantables are undoable when their deployment synchronously
-  creates identifiable persistent entities at the planting point. Unsupported
-  deployment results still plant normally and show a localized notice that
-  undo is unavailable.
 - Invalid requests are rate-limited before expensive layout work.
 - All players share bounded per-tick preflight and planting budgets with
   round-robin scheduling; at most eight planting batches run concurrently.
@@ -147,18 +130,16 @@ path.
 - Plant metadata is resolved once for the current item instance and reused
   until that instance changes. Per-point validation does not repeatedly query
   deploy mode and spacing.
-- A plant callback error stops only the current request. Slow callbacks produce
-  throttled performance warnings but their successful results are accepted;
-  they are not quarantined.
-- Deploy follows the native item boundary. If deployment fails while the
-  detached item is still valid, that same item is returned to its original
-  container, player inventory, or the player's feet. If a callback invalidates
-  the item before failing, the state is unknown, so the batch stops and logs
-  the incident. The mod never synthesizes a replacement item.
-- Mosswork's execution-budgeted callback runner remains limited to low-frequency
-  item/action metadata and extension UI work. Per-point `CanDeploy` and server
-  `Deploy` calls use ordinary protected calls to avoid instruction-hook
-  overhead.
+- Plant queries and deployment callbacks run with instruction and wall-time
+  budgets. A pure-Lua runaway callback is interrupted and stops only the
+  current request. Slow native calls are logged after they return.
+- Deploy follows the native item boundary. If the callback cleanly rejects the
+  deployment before making a persistent result, that same item is returned to
+  its original container, player inventory, or the player's feet. If the
+  callback errors or creates a persistent result before reporting failure, the
+  state is treated as unknown and the detached source is consumed, so an error
+  cannot duplicate both the plant and its source item. The batch then stops and
+  logs the incident. The mod never synthesizes a replacement item.
 - Players must remain near the original action point during execution.
 - Busy, timeout, extension, and internal failures appear as localized system
   messages. Distance, inventory shortage, and no-valid-position outcomes stay
@@ -205,7 +186,6 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 3. 按住 `Ctrl` 滚动鼠标滚轮，调整行数。
 4. 按住 `Alt` 滚动鼠标滚轮，调整列数。
 5. 按鼠标右键确认。
-6. 批次完成后的 5 秒内按 `Ctrl+Z`，撤销上一批种植。
 
 默认阵列为 `1 × 1`。每个方向允许的候选数量由自动间距决定：间距为
 `1` 个世界单位时最多 `36` 株，间距为 `4/3` 时最多 `27` 株，间距为
@@ -219,12 +199,6 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 开始整批种植。角色不需要逐个走到每株作物的位置。
 
 种植助手不会覆写左键，原版物品栏丢弃和移动行为仍然可用。
-
-每名玩家只保留最近一个已完成批次。提交新的有效种植助手批次后，旧历史
-立即失效；走路、打开背包等普通操作不会清除历史。只有服务端记录的全部
-作物实体仍保持同一 GUID、并留在原种植点时，整批撤销才会执行。任意实体
-已经消失、被替换或移动时，整批保持不变。5 秒内施肥等不替换实体的变化
-本身不会阻止撤销。
 
 ### 预览
 
@@ -289,11 +263,6 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 - 客户端输入和预览只负责预测。
 - 服务端校验请求 ID、活动种植物、距离、行列、自动计算的间距、库存和
   每次部署。
-- `Ctrl+Z` 只在游戏画面且没有文本输入焦点时生效。服务端为每名玩家保留
-  一份 5 秒单层历史，先校验整批，再只移除准确记录的 GUID，并通过服务端
-  物品存档返还原先消耗的物品。
-- 原版或第三方种植物只要能在部署回调内同步生成可识别的持久实体，就支持
-  撤销。无法安全识别结果的部署仍会正常种植，并显示本地化的不支持提示。
 - 无效请求会在高成本布局计算前进入限流。
 - 所有玩家通过轮转调度共享固定的单帧预检与种植预算，同时执行的种植
   批次最多为 8 个。
@@ -301,14 +270,12 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 - 即使终止消息丢失，客户端也会通过心跳超时自动解除 busy。
 - 种植物元数据只针对当前物品实例解析一次并复用，只有实例变化时才重新
   解析。逐点校验不会重复查询部署模式和间距。
-- 种植物回调抛错只终止当前请求。慢回调仅产生节流性能警告；只要成功
-  返回，结果仍被接受，也不会因此被隔离。
-- Deploy 遵循原生物品边界。部署失败且已取出的物品仍然有效时，会依次
-  尝试归还原容器、玩家物品栏或玩家脚下；如果回调在失败前使物品失效，
-  则状态未知，批次停止并记录日志。模组绝不会合成替代物品。
-- Mosswork 的带执行预算回调执行器只用于低频物品/动作元数据和扩展 UI；
-  逐点 `CanDeploy` 与服务端 `Deploy` 使用普通保护调用，避免指令 hook
-  的热路径开销。
+- 种植物查询和部署回调都受指令数与执行时间预算约束。纯 Lua 失控循环会被
+  中断，并且只终止当前请求；无法提前中断的慢速原生调用会在返回后记录。
+- Deploy 遵循原生物品边界。回调在生成持久结果前明确返回失败时，会尝试归还
+  同一个原物品；如果回调抛错，或先生成持久结果再返回失败，则状态按未知处理
+  并消耗已取出的原物品，避免作物与来源物品同时存在。随后批次停止并记录该
+  情况。模组绝不会合成替代物品。
 - 执行期间玩家必须留在原动作点附近。
 - 繁忙、超时、扩展回调和内部故障会以当前语言的系统消息通知对应玩家；
   距离过远、库存不足和无有效位置保持静默。

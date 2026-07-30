@@ -22,7 +22,7 @@ Mosswork.AssertAPIVersion(
 local Server = require("mosswork/planting_assistant/server")
 local Client = nil
 
-AddPrefabPostInitAny(Server.TrackUndoSpawnedEntity)
+AddPrefabPostInitAny(Server.TrackSpawnedEntity)
 
 local function ExecutePlanAction(action)
     return Server.BeginPlantRequest(action)
@@ -471,16 +471,6 @@ AddModRPCHandler(
     end
 )
 
-local function HandleUndoRPC(player)
-    Server.HandleUndoRequest(player)
-end
-
-AddModRPCHandler(
-    Shared.RPC_NAMESPACE,
-    Shared.RPC_UNDO,
-    HandleUndoRPC
-)
-
 if not GLOBAL.TheNet:IsDedicated() then
     Client = require("mosswork/planting_assistant/client")
 end
@@ -493,18 +483,6 @@ AddClientModRPCHandler(
             Client.ReceiveResult(request_id, reason)
         end
     end
-)
-
-local function HandleUndoResultRPC(reason)
-    if Client ~= nil then
-        Client.ReceiveUndoResult(reason)
-    end
-end
-
-AddClientModRPCHandler(
-    Shared.RPC_NAMESPACE,
-    Shared.RPC_UNDO_RESULT,
-    HandleUndoResultRPC
 )
 
 if Client ~= nil then

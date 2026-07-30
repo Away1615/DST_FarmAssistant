@@ -1,10 +1,14 @@
 local Shared = require("mosswork/planting_assistant/shared")
-local Undo = require("mosswork/planting_assistant/server_undo")
-local Log = require("mosswork").Log.Create(Shared.MOD_ID)
+local Mosswork = require("mosswork")
+local Callback = Mosswork.Callback
+local Log = Mosswork.Log.Create(Shared.MOD_ID)
 
 local M = {}
 local rejection_log_state = setmetatable({}, { __mode = "k" })
 local slow_callback_log_state = {}
+local active_deployment_capture = nil
+local DEPLOYMENT_CAPTURE_RADIUS = 0.25
+local MAX_CAPTURED_SPAWNS = 65
 
 local REQUEST_WARNING_REASONS = {
     invalid_request = true,
@@ -51,6 +55,98 @@ local function IsItemHeldByPlayer(item, player)
     return inventory_item ~= nil and inventory_item:GetGrandOwner() == player
 end
 
+local function HasInventoryOwner(inst)
+    local inventory_item = inst ~= nil
+        and inst.components ~= nil
+        and inst.components.inventoryitem
+        or nil
+    if inventory_item == nil
+        or type(inventory_item.GetGrandOwner) ~= "function" then
+        return false
+    end
+
+    local completed, owner = pcall(
+        inventory_item.GetGrandOwner,
+        inventory_item
+    )
+    return not completed or owner ~= nil
+end
+
+local function BeginDeploymentCapture(point)
+    if active_deployment_capture ~= nil or point == nil then
+        return nil
+    end
+
+    local capture = {
+        x = point.x,
+        z = point.z,
+        spawned = {},
+        overflow = false,
+    }
+    active_deployment_capture = capture
+    return capture
+end
+
+local function IsCapturedDeploymentResult(inst, capture)
+    if inst == nil
+        or not inst:IsValid()
+        or inst.Transform == nil
+        or inst.persists == false
+        or inst:HasTag("INLIMBO")
+        or HasInventoryOwner(inst) then
+        return false
+    end
+
+    local x, _, z = inst.Transform:GetWorldPosition()
+    local dx = x - capture.x
+    local dz = z - capture.z
+    return dx * dx + dz * dz
+        <= DEPLOYMENT_CAPTURE_RADIUS * DEPLOYMENT_CAPTURE_RADIUS
+end
+
+local function EndDeploymentCapture(capture)
+    local summary = {
+        has_entities = false,
+        state_known = capture ~= nil,
+    }
+    if capture == nil then
+        return summary
+    end
+    if active_deployment_capture ~= capture then
+        summary.state_known = false
+        return summary
+    end
+
+    active_deployment_capture = nil
+    if capture.overflow then
+        summary.has_entities = true
+        return summary
+    end
+    for _, inst in ipairs(capture.spawned) do
+        if IsCapturedDeploymentResult(inst, capture) then
+            summary.has_entities = true
+            break
+        end
+    end
+    return summary
+end
+
+function M.TrackSpawnedEntity(inst)
+    local capture = active_deployment_capture
+    if capture == nil or inst == nil then
+        return
+    end
+    if #capture.spawned < MAX_CAPTURED_SPAWNS then
+        capture.spawned[#capture.spawned + 1] = inst
+    else
+        capture.overflow = true
+    end
+end
+
+function M.ResetDeploymentCapture()
+    active_deployment_capture = nil
+end
+
 local function SafeToString(value)
     local value_type = type(value)
     if value_type == "string"
@@ -60,19 +156,6 @@ local function SafeToString(value)
         return tostring(value)
     end
     return "<" .. value_type .. ">"
-end
-
-local function GetRealTimeMilliseconds()
-    return type(GetTimeReal) == "function" and GetTimeReal() or nil
-end
-
-local function ElapsedMilliseconds(started_at)
-    local finished_at = GetRealTimeMilliseconds()
-    return started_at ~= nil
-            and finished_at ~= nil
-            and finished_at >= started_at
-            and finished_at - started_at
-        or 0
 end
 
 local function RecordCallbackFault(callback_name, callback_scope)
@@ -117,25 +200,40 @@ local function RunPlantableCallback(
     end
 
     local is_deploy = callback_name == "Deploy"
-    local started_at = GetRealTimeMilliseconds()
-    local completed, result = pcall(callback, ...)
-    local elapsed_ms = ElapsedMilliseconds(started_at)
+    local completed, result, issue, elapsed_ms = Callback.Run(
+        tostring(prefab) .. " " .. tostring(callback_name),
+        callback,
+        {
+            timeout_ms = is_deploy
+                    and Shared.DEPLOY_CALLBACK_TIMEOUT_MS
+                or Shared.PLANT_QUERY_CALLBACK_TIMEOUT_MS,
+            instruction_limit = is_deploy
+                    and Shared.DEPLOY_CALLBACK_INSTRUCTION_LIMIT
+                or Shared.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT,
+            hook_interval = Shared.PLANT_CALLBACK_HOOK_INTERVAL,
+        },
+        ...
+    )
     if not completed then
         Log:Error(
             "plantable callback failed prefab=%s callback=%s"
-                .. " error=%s",
+                .. " issue=%s error=%s",
             tostring(prefab),
             tostring(callback_name),
+            tostring(issue or "error"),
             SafeToString(result)
         )
         RecordCallbackFault(callback_name, callback_scope)
-        return false, nil, "plantable_unavailable", "error"
+        return false,
+            nil,
+            "plantable_unavailable",
+            issue or "error"
     end
 
     local slow_threshold = is_deploy
             and Shared.DEPLOY_CALLBACK_SLOW_THRESHOLD_MS
         or Shared.PLANT_QUERY_CALLBACK_SLOW_THRESHOLD_MS
-    if elapsed_ms >= slow_threshold then
+    if tonumber(elapsed_ms) ~= nil and elapsed_ms >= slow_threshold then
         WarnSlowCallback(prefab, callback_name, elapsed_ms)
     end
     return true, result, nil, nil
@@ -648,14 +746,7 @@ function M.DeployOne(player, batch, point, item, metadata)
         local inventory_item = item.components.inventoryitem
         local previous_container = inventory_item:GetContainer()
         local previous_slot = inventory_item:GetSlotNum()
-        local undo_capture = Undo.BeginDeployment(
-            batch,
-            point,
-            nil,
-            false,
-            previous_container,
-            previous_slot
-        )
+        local deployment_capture = BeginDeploymentCapture(point)
 
         local callback_ok, success, reason =
             RunPlantableCallback(
@@ -668,11 +759,9 @@ function M.DeployOne(player, batch, point, item, metadata)
             player,
             0
         )
-        Undo.EndDeployment(
-            undo_capture,
-            callback_ok and success
-        )
-        if callback_ok and success then
+        local deployment =
+            EndDeploymentCapture(deployment_capture)
+        if callback_ok and success == true then
             if item:IsValid()
                 and not IsItemHeldByPlayer(item, player)
                 and not ReturnRemovedItem(
@@ -685,6 +774,43 @@ function M.DeployOne(player, batch, point, item, metadata)
                 return true, nil, "rollback_failed"
             end
             return true, nil, nil
+        end
+
+        local state_uncertain = not callback_ok
+            or deployment.state_known ~= true
+            or deployment.has_entities == true
+        if state_uncertain then
+            local item_restored = item:IsValid()
+                and (
+                    IsItemHeldByPlayer(item, player)
+                    or ReturnRemovedItem(
+                        player,
+                        inventory,
+                        item,
+                        previous_container,
+                        previous_slot
+                    )
+                )
+            Log:Error(
+                "reusable deploy state unknown prefab=%s"
+                    .. " player=%s entity=%s item_restored=%s;"
+                    .. " batch stopped",
+                tostring(item.prefab),
+                M.GetPlayerLogId(player),
+                tostring(deployment.has_entities == true),
+                tostring(item_restored)
+            )
+            if deployment.has_entities then
+                return true,
+                    nil,
+                    item_restored
+                            and "deploy_state_unknown"
+                        or "rollback_failed"
+            end
+            return false,
+                item_restored
+                        and "deploy_state_unknown"
+                    or "rollback_failed"
         end
 
         return ResolveFailedDeploy(
@@ -723,14 +849,7 @@ function M.DeployOne(player, batch, point, item, metadata)
     end
 
     local removed_deployable = removed.components.deployable
-    local undo_capture = Undo.BeginDeployment(
-        batch,
-        point,
-        removed,
-        true,
-        previous_container,
-        previous_slot
-    )
+    local deployment_capture = BeginDeploymentCapture(point)
     local callback_ok, success, reason =
         RunPlantableCallback(
         removed.prefab,
@@ -742,16 +861,40 @@ function M.DeployOne(player, batch, point, item, metadata)
         player,
         0
     )
-    Undo.EndDeployment(
-        undo_capture,
-        callback_ok and success
-    )
-    if callback_ok and success then
+    local deployment =
+        EndDeploymentCapture(deployment_capture)
+    if callback_ok and success == true then
         if removed:IsValid()
             and not ConsumeDetachedItem(removed) then
             return true, nil, "rollback_failed"
         end
         return true, nil, nil
+    end
+
+    local state_uncertain = not callback_ok
+        or deployment.state_known ~= true
+        or deployment.has_entities == true
+    if state_uncertain then
+        local consumed = ConsumeDetachedItem(removed)
+        Log:Error(
+            "deploy state unknown prefab=%s player=%s"
+                .. " entity=%s source_consumed=%s; batch stopped",
+            tostring(removed.prefab),
+            M.GetPlayerLogId(player),
+            tostring(deployment.has_entities == true),
+            tostring(consumed)
+        )
+        if deployment.has_entities then
+            return true,
+                nil,
+                consumed
+                        and "deploy_state_unknown"
+                    or "rollback_failed"
+        end
+        return false,
+            consumed
+                    and "deploy_state_unknown"
+                or "rollback_failed"
     end
 
     return ResolveFailedDeploy(

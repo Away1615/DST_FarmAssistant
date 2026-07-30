@@ -45,18 +45,6 @@ local STRINGS = {
         ["failure.plantable_unavailable"] =
             "This item's planting code failed. The current batch was stopped.",
         ["failure.generic"] = "Batch planting did not complete.",
-        ["undo.success"] = "The previous planting batch was undone.",
-        ["undo.unavailable"] =
-            "There is no recent planting batch to undo.",
-        ["undo.expired"] = "The 5-second undo window has expired.",
-        ["undo.changed"] =
-            "A planted entity is gone or moved, so the batch was not undone.",
-        ["undo.unsupported"] =
-            "This planting result does not support safe undo.",
-        ["undo.busy"] =
-            "Wait for the current planting batch to finish.",
-        ["undo.internal"] =
-            "The planting batch could not be undone safely. Check the server log.",
 
         ["opacity.hidden"] = "Hidden",
         ["opacity.very_low"] = "Very Low",
@@ -99,16 +87,6 @@ local STRINGS = {
         ["failure.plantable_unavailable"] =
             "该物品的种植逻辑报错，当前批次已停止。",
         ["failure.generic"] = "批量种植未能完成。",
-        ["undo.success"] = "上一批种植已撤销。",
-        ["undo.unavailable"] = "当前没有可撤销的最近种植批次。",
-        ["undo.expired"] = "5 秒撤销窗口已结束。",
-        ["undo.changed"] =
-            "部分作物已消失、被替换或离开原位置，整批未撤销。",
-        ["undo.unsupported"] =
-            "该作物的种植结果无法安全识别，因此不支持撤销。",
-        ["undo.busy"] = "请等待当前种植批次完成后再撤销。",
-        ["undo.internal"] =
-            "无法安全撤销上一批种植，请检查服务端日志。",
 
         ["opacity.hidden"] = "隐藏",
         ["opacity.very_low"] = "很浅",
@@ -161,19 +139,6 @@ local STRINGS = {
         ["failure.plantable_unavailable"] =
             "El código de plantación del objeto falló. Se detuvo el lote actual.",
         ["failure.generic"] = "La plantación en lote no pudo completarse.",
-        ["undo.success"] = "Se deshizo el último lote de plantación.",
-        ["undo.unavailable"] =
-            "No hay ningún lote reciente que se pueda deshacer.",
-        ["undo.expired"] =
-            "La ventana de deshacer de 5 segundos ha terminado.",
-        ["undo.changed"] =
-            "Una planta desapareció o se movió; no se deshizo el lote.",
-        ["undo.unsupported"] =
-            "Este resultado de plantación no admite un deshacer seguro.",
-        ["undo.busy"] =
-            "Espera a que termine el lote de plantación actual.",
-        ["undo.internal"] =
-            "No se pudo deshacer el lote de forma segura. Revisa el registro del servidor.",
 
         ["opacity.hidden"] = "Oculto",
         ["opacity.very_low"] = "Muy baja",
@@ -225,19 +190,6 @@ local STRINGS = {
         ["failure.plantable_unavailable"] =
             "Код посадки предмета завершился ошибкой. Текущая партия остановлена.",
         ["failure.generic"] = "Массовая посадка не была завершена.",
-        ["undo.success"] = "Последняя партия посадки отменена.",
-        ["undo.unavailable"] =
-            "Нет недавней партии посадки для отмены.",
-        ["undo.expired"] =
-            "Пятисекундное окно отмены уже истекло.",
-        ["undo.changed"] =
-            "Одно из растений исчезло или переместилось; партия не отменена.",
-        ["undo.unsupported"] =
-            "Результат этой посадки нельзя безопасно отменить.",
-        ["undo.busy"] =
-            "Дождитесь завершения текущей партии посадки.",
-        ["undo.internal"] =
-            "Не удалось безопасно отменить посадку. Проверьте журнал сервера.",
 
         ["opacity.hidden"] = "Скрыто",
         ["opacity.very_low"] = "Очень низкая",
@@ -291,20 +243,6 @@ local STRINGS = {
             "Le code de plantation de cet objet a échoué. Le lot en cours a été arrêté.",
         ["failure.generic"] =
             "La plantation groupée n’a pas pu être terminée.",
-        ["undo.success"] =
-            "La dernière plantation groupée a été annulée.",
-        ["undo.unavailable"] =
-            "Aucune plantation récente ne peut être annulée.",
-        ["undo.expired"] =
-            "La fenêtre d’annulation de 5 secondes est terminée.",
-        ["undo.changed"] =
-            "Une plante a disparu ou s’est déplacée ; le lot n’a pas été annulé.",
-        ["undo.unsupported"] =
-            "Ce résultat de plantation ne permet pas une annulation sûre.",
-        ["undo.busy"] =
-            "Attendez la fin de la plantation groupée en cours.",
-        ["undo.internal"] =
-            "Impossible d’annuler la plantation en toute sécurité. Consultez le journal du serveur.",
 
         ["opacity.hidden"] = "Masquée",
         ["opacity.very_low"] = "Très faible",
@@ -357,20 +295,6 @@ local STRINGS = {
             "Der Pflanzcode dieses Gegenstands ist fehlgeschlagen. Der aktuelle Durchlauf wurde gestoppt.",
         ["failure.generic"] =
             "Die Gruppenpflanzung konnte nicht abgeschlossen werden.",
-        ["undo.success"] =
-            "Die letzte Gruppenpflanzung wurde rückgängig gemacht.",
-        ["undo.unavailable"] =
-            "Es gibt keine aktuelle Pflanzung zum Rückgängigmachen.",
-        ["undo.expired"] =
-            "Das 5-Sekunden-Zeitfenster zum Rückgängigmachen ist abgelaufen.",
-        ["undo.changed"] =
-            "Eine Pflanze fehlt oder wurde verschoben; der Vorgang wurde nicht rückgängig gemacht.",
-        ["undo.unsupported"] =
-            "Dieses Pflanzergebnis kann nicht sicher rückgängig gemacht werden.",
-        ["undo.busy"] =
-            "Warte, bis die aktuelle Gruppenpflanzung abgeschlossen ist.",
-        ["undo.internal"] =
-            "Die Pflanzung konnte nicht sicher rückgängig gemacht werden. Prüfe das Serverprotokoll.",
 
         ["opacity.hidden"] = "Ausgeblendet",
         ["opacity.very_low"] = "Sehr niedrig",
@@ -419,19 +343,6 @@ local STRINGS = {
         ["failure.plantable_unavailable"] =
             "このアイテムの植え付け処理でエラーが発生したため、現在の一括処理を停止しました。",
         ["failure.generic"] = "一括植え付けを完了できませんでした。",
-        ["undo.success"] = "直前の一括植え付けを元に戻しました。",
-        ["undo.unavailable"] =
-            "元に戻せる直前の植え付けはありません。",
-        ["undo.expired"] =
-            "5 秒間の取り消し受付時間が終了しました。",
-        ["undo.changed"] =
-            "植物が消失または移動したため、一括処理を元に戻しませんでした。",
-        ["undo.unsupported"] =
-            "この植え付け結果は安全に元に戻せません。",
-        ["undo.busy"] =
-            "現在の一括植え付けが完了するまでお待ちください。",
-        ["undo.internal"] =
-            "植え付けを安全に元に戻せませんでした。サーバーログを確認してください。",
 
         ["opacity.hidden"] = "非表示",
         ["opacity.very_low"] = "最低",
@@ -483,19 +394,6 @@ local STRINGS = {
         ["failure.plantable_unavailable"] =
             "이 아이템의 심기 코드에서 오류가 발생해 현재 일괄 작업을 중단했습니다.",
         ["failure.generic"] = "일괄 심기를 완료하지 못했습니다.",
-        ["undo.success"] = "이전 일괄 심기를 되돌렸습니다.",
-        ["undo.unavailable"] =
-            "되돌릴 수 있는 최근 심기 작업이 없습니다.",
-        ["undo.expired"] =
-            "5초 되돌리기 시간이 끝났습니다.",
-        ["undo.changed"] =
-            "식물이 사라졌거나 이동하여 일괄 작업을 되돌리지 않았습니다.",
-        ["undo.unsupported"] =
-            "이 심기 결과는 안전한 되돌리기를 지원하지 않습니다.",
-        ["undo.busy"] =
-            "현재 일괄 심기가 끝날 때까지 기다려 주세요.",
-        ["undo.internal"] =
-            "심기 작업을 안전하게 되돌리지 못했습니다. 서버 로그를 확인하세요.",
 
         ["opacity.hidden"] = "숨김",
         ["opacity.very_low"] = "매우 낮음",

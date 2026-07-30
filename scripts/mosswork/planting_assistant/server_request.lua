@@ -2,7 +2,6 @@ local Shared = require("mosswork/planting_assistant/shared")
 local Layout = require("mosswork/planting_assistant/layout")
 local Common = require("mosswork/planting_assistant/server_common")
 local Batch = require("mosswork/planting_assistant/server_batch")
-local Undo = require("mosswork/planting_assistant/server_undo")
 
 local M = {}
 
@@ -145,7 +144,6 @@ function M.HandlePlantRequest(
         return
     end
 
-    Undo.ClearHistory(player)
     pending_requests[player] = {
         request_id = tonumber(request_id),
         prefab = prefab,
@@ -292,7 +290,6 @@ function M.BeginPlantRequest(action)
         runtime_blocked_count = 0,
         planted_count = 0,
         registered = false,
-        undo_history = Undo.CreateBatchHistory(),
     }
     return Batch.Start(player, batch)
 end
