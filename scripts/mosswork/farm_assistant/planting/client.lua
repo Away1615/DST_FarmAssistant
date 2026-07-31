@@ -1,9 +1,10 @@
 local Mosswork = require("mosswork")
-local Shared = require("mosswork/planting_assistant/shared")
-local Layout = require("mosswork/planting_assistant/layout")
-local I18N = require("mosswork/planting_assistant/i18n")
+local Shared = require("mosswork/farm_assistant/planting/shared")
+local Layout = require("mosswork/farm_assistant/planting/layout")
+local I18N = require("mosswork/farm_assistant/planting/i18n")
 local Log = Mosswork.Log.Create(Shared.MOD_ID)
-local MossworkProfile = require("mosswork/profile")
+local Input = Mosswork.Input
+local Storage = Mosswork.Storage
 local Values = Mosswork.Values
 
 local M = {}
@@ -11,13 +12,14 @@ local GetUiTime = GetStaticTime
 
 Mosswork.AssertAPIVersion(
     Shared.MOSSWORK_API_VERSION,
-    "Planting Assistant"
+    I18N.Translate("mod.name")
 )
 
 local function GetDefaultLocalSettings()
     return {
         default_rows = Shared.DEFAULT_ROWS,
         default_columns = Shared.DEFAULT_COLUMNS,
+        execution_mode = Shared.DEFAULT_EXECUTION_MODE,
         placement_grid_opacity = Shared.PLACEMENT_GRID_OPACITY,
     }
 end
@@ -33,6 +35,9 @@ local function NormalizeLocalSettings(settings)
         default_columns = Shared.ClampDimension(
             settings.default_columns or defaults.default_columns
         ),
+        execution_mode = Shared.NormalizeExecutionMode(
+            settings.execution_mode
+        ),
         placement_grid_opacity = Values.ClampNumber(
             settings.placement_grid_opacity,
             0,
@@ -46,17 +51,11 @@ local function NormalizeSettingsValues(settings)
     return NormalizeLocalSettings(settings)
 end
 
-local profile_store = MossworkProfile.CreateOfficial(
-    Shared.MOD_ID,
-    {
-        defaults = GetDefaultLocalSettings,
-        normalize = NormalizeLocalSettings,
-    }
-)
-
-local local_settings = profile_store:Load()
-local placement_marker_opacities =
-    setmetatable({}, { __mode = "k" })
+local local_settings = GetDefaultLocalSettings()
+local placement_marker_opacities = Storage.CreateCache({
+    weak_keys = true,
+    max_entries = 4096,
+})
 
 local state = {
     player = nil,
@@ -70,7 +69,6 @@ local state = {
     current = nil,
     handlers_installed = false,
     request_id = 0,
-    controller_action_latched = false,
     hidden_native_placer = nil,
     hidden_native_placer_scale = nil,
 }
@@ -597,7 +595,7 @@ local function ApplyPlacementMarkerOpacity(marker)
     end
 
     local opacity = state.local_settings.placement_grid_opacity
-    if placement_marker_opacities[marker] == opacity then
+    if placement_marker_opacities:Get(marker) == opacity then
         return
     end
 
@@ -607,7 +605,7 @@ local function ApplyPlacementMarkerOpacity(marker)
         1,
         opacity
     )
-    placement_marker_opacities[marker] = opacity
+    placement_marker_opacities:Set(marker, opacity)
 end
 
 local function RestoreNativePlacementVisuals()
@@ -678,9 +676,6 @@ local function RefreshNativePlacementVisuals()
 end
 
 local function OnPreviewTick()
-    if TheInput == nil or not TheInput:ControllerAttached() then
-        state.controller_action_latched = false
-    end
     RefreshPreview(false)
     RefreshNativePlacementVisuals()
 end
@@ -698,7 +693,6 @@ local function OnPlayerRemoved(player)
     state.player = nil
     state.update_task = nil
     state.listener_player = nil
-    state.controller_action_latched = false
 end
 
 local DIMENSION_OPTIONS = {}
@@ -723,14 +717,23 @@ local function BuildOpacityOptions()
     }
 end
 
+local function BuildExecutionModeOptions()
+    return {
+        {
+            text = I18N.Translate("execution.batch"),
+            data = Shared.EXECUTION_MODE_BATCH,
+        },
+        {
+            text = I18N.Translate("execution.sequential"),
+            data = Shared.EXECUTION_MODE_SEQUENTIAL,
+        },
+    }
+end
+
 local function Translated(key)
     return function()
         return I18N.Translate(key)
     end
-end
-
-local function IsModifierDown(key)
-    return TheInput ~= nil and TheInput:IsKeyDown(key)
 end
 
 local function GetPlantingInput()
@@ -760,36 +763,35 @@ local function AdjustLayout(rows_delta, columns_delta, spacing)
     RefreshPreview(true)
 end
 
-local function OnMouseButton(button, down)
-    if not down
-        or (button ~= MOUSEBUTTON_SCROLLUP and button ~= MOUSEBUTTON_SCROLLDOWN) then
-        return
-    end
+local LAYOUT_DELTAS = {
+    [Shared.INPUT_ROWS_INCREASE] = { 1, 0 },
+    [Shared.INPUT_ROWS_DECREASE] = { -1, 0 },
+    [Shared.INPUT_COLUMNS_INCREASE] = { 0, 1 },
+    [Shared.INPUT_COLUMNS_DECREASE] = { 0, -1 },
+}
 
+local function HandleLayoutInput(context)
     local _, spacing = GetPlantingInput()
     if spacing == nil then
-        return
+        return false
     end
 
-    local delta = button == MOUSEBUTTON_SCROLLUP and 1 or -1
-    local adjusts_rows = IsModifierDown(KEY_CTRL)
-    local adjusts_columns = not adjusts_rows and IsModifierDown(KEY_ALT)
-    if not adjusts_rows and not adjusts_columns then
-        return
+    local delta = LAYOUT_DELTAS[context.action_id]
+    if delta == nil then
+        return false
     end
 
-    local controller = state.player.components ~= nil
-        and state.player.components.playercontroller
-        or nil
-    if controller ~= nil then
-        controller.lastzoomtime = GetUiTime()
+    if context.device == "mouse" then
+        local controller = state.player.components ~= nil
+            and state.player.components.playercontroller
+            or nil
+        if controller ~= nil then
+            controller.lastzoomtime = GetUiTime()
+        end
     end
 
-    if adjusts_rows then
-        AdjustLayout(delta, 0, spacing)
-    elseif adjusts_columns then
-        AdjustLayout(0, delta, spacing)
-    end
+    AdjustLayout(delta[1], delta[2], spacing)
+    return true
 end
 
 local function NextRequestId()
@@ -840,7 +842,8 @@ local function BuildPlantRequest(item, spacing, x, z)
         rows = requested_layout.rows,
         columns = requested_layout.columns,
         prefab = item.prefab,
-    }
+        execution_mode = state.local_settings.execution_mode,
+    }, requested_layout
 end
 
 function M.PreparePlantRequest(action)
@@ -853,96 +856,79 @@ function M.PreparePlantRequest(action)
     end
 
     local x, z = ResolveActionPoint(action)
-    return BuildPlantRequest(active_item, spacing, x, z)
+    local request, layout = BuildPlantRequest(
+        active_item,
+        spacing,
+        x,
+        z
+    )
+    if request ~= nil
+        and request.execution_mode == Shared.EXECUTION_MODE_SEQUENTIAL then
+        local first_point = Layout.GetTraversalPoint(layout, 1)
+        if first_point == nil then
+            return nil
+        end
+        action:SetActionPoint(Vector3(
+            first_point.x,
+            0,
+            first_point.z
+        ))
+    end
+    return request
 end
 
-local function GetControllerLayoutDelta(control)
-    if TheInput == nil or TheInput.ResolveVirtualControls == nil then
-        return nil, nil
-    end
-
-    if control == TheInput:ResolveVirtualControls(
-        VIRTUAL_CONTROL_INV_ACTION_UP
-    ) then
-        return 1, 0
-    elseif control == TheInput:ResolveVirtualControls(
-        VIRTUAL_CONTROL_INV_ACTION_DOWN
-    ) then
-        return -1, 0
-    elseif control == TheInput:ResolveVirtualControls(
-        VIRTUAL_CONTROL_INV_ACTION_LEFT
-    ) then
-        return 0, -1
-    elseif control == TheInput:ResolveVirtualControls(
-        VIRTUAL_CONTROL_INV_ACTION_RIGHT
-    ) then
-        return 0, 1
-    end
-    return nil, nil
-end
-
-function M.HandleControllerControl(controller, control, down)
-    if control == CONTROL_CONTROLLER_ACTION
-        and not down
-        and state.controller_action_latched then
-        state.controller_action_latched = false
-        return true, nil
-    end
-
+function M.PrepareControllerPlantRequest(controller)
     local item, deployplacer, placer =
         GetControllerDeploySelection(controller)
     if item == nil
         or controller == nil
         or controller.inst ~= state.player
         or not IsGameplayScreenAvailable() then
-        return false, nil
+        return nil
+    end
+    if placer.can_build ~= true then
+        return nil
     end
 
-    if control == CONTROL_CONTROLLER_ACTION then
-        if state.controller_action_latched then
-            return true, nil
-        end
-        state.controller_action_latched = true
-        if placer.can_build ~= true then
-            return true, nil
-        end
-
-        local native_spacing = Shared.GetInventoryPlantSpacing(item)
-        local spacing = native_spacing ~= nil
-            and Shared.ResolvePlantSpacing(native_spacing)
-            or nil
-        local point = deployplacer:GetPosition()
-        if spacing == nil or point == nil then
-            return true, nil
-        end
-
-        local request = BuildPlantRequest(
-            item,
-            spacing,
-            point.x,
-            point.z
-        )
-        if request ~= nil then
-            request.source_guid = item.GUID
-        end
-        return true, request
+    local native_spacing = Shared.GetInventoryPlantSpacing(item)
+    local spacing = native_spacing ~= nil
+        and Shared.ResolvePlantSpacing(native_spacing)
+        or nil
+    local point = deployplacer:GetPosition()
+    if spacing == nil or point == nil then
+        return nil
     end
 
-    local rows_delta, columns_delta =
-        GetControllerLayoutDelta(control)
-    if rows_delta == nil then
-        return false, nil
+    local request = BuildPlantRequest(
+        item,
+        spacing,
+        point.x,
+        point.z
+    )
+    if request ~= nil then
+        request.source_guid = item.GUID
     end
-    if down then
-        local spacing = Shared.GetInventoryPlantSpacing(item)
-        spacing = spacing ~= nil
-            and Shared.ResolvePlantSpacing(spacing)
-            or nil
-        if spacing ~= nil then
-            AdjustLayout(rows_delta, columns_delta, spacing)
-        end
+    return request
+end
+
+local function IsControllerPlanting(controller)
+    local item = GetControllerDeploySelection(controller)
+    return item ~= nil
+        and controller ~= nil
+        and controller.inst == state.player
+        and IsGameplayScreenAvailable()
+end
+
+local function HandleControllerConfirm(context, submit_request)
+    if not IsControllerPlanting(context.controller) then
+        return false
     end
-    return true, nil
+
+    local request = M.PrepareControllerPlantRequest(context.controller)
+    if request ~= nil then
+        submit_request(request)
+    end
+    return true
 end
 
 function M.UpdateControllerHint(controls)
@@ -964,42 +950,47 @@ function M.UpdateControllerHint(controls)
     local controller_id = TheInput:GetControllerID()
     local lines = {}
     if placer.can_build == true then
-        lines[#lines + 1] = TheInput:GetLocalizedControl(
-            controller_id,
-            CONTROL_CONTROLLER_ACTION
-        ) .. " " .. I18N.Translate("action.batch")
+        lines[#lines + 1] = Input.GetLocalizedBinding(
+            Shared.INPUT_CONFIRM,
+            "controller",
+            controller_id
+        ) .. " " .. I18N.Translate("action.layout")
     end
     lines[#lines + 1] = string.format(
         "%s + / %s -  %s",
-        TheInput:GetLocalizedControl(
-            controller_id,
-            VIRTUAL_CONTROL_INV_ACTION_UP
+        Input.GetLocalizedBinding(
+            Shared.INPUT_ROWS_INCREASE,
+            "controller",
+            controller_id
         ),
-        TheInput:GetLocalizedControl(
-            controller_id,
-            VIRTUAL_CONTROL_INV_ACTION_DOWN
+        Input.GetLocalizedBinding(
+            Shared.INPUT_ROWS_DECREASE,
+            "controller",
+            controller_id
         ),
         string.format(I18N.Translate("controller.rows"), state.rows)
     )
     lines[#lines + 1] = string.format(
         "%s - / %s +  %s",
-        TheInput:GetLocalizedControl(
-            controller_id,
-            VIRTUAL_CONTROL_INV_ACTION_LEFT
+        Input.GetLocalizedBinding(
+            Shared.INPUT_COLUMNS_DECREASE,
+            "controller",
+            controller_id
         ),
-        TheInput:GetLocalizedControl(
-            controller_id,
-            VIRTUAL_CONTROL_INV_ACTION_RIGHT
+        Input.GetLocalizedBinding(
+            Shared.INPUT_COLUMNS_INCREASE,
+            "controller",
+            controller_id
         ),
         string.format(
             I18N.Translate("controller.columns"),
             state.columns
         )
     )
-    lines[#lines + 1] = TheInput:GetLocalizedControl(
-        controller_id,
-        CONTROL_CONTROLLER_ALTACTION
-    ) .. " " .. STRINGS.UI.HUD.CANCEL
+    lines[#lines + 1] = Input.GetLocalizedControl({
+        device = "controller",
+        code = CONTROL_CONTROLLER_ALTACTION,
+    }, controller_id) .. " " .. STRINGS.UI.HUD.CANCEL
 
     hint:Show()
     hint:SetTarget(deployplacer)
@@ -1040,7 +1031,7 @@ function M.Attach(player)
 end
 
 function M.ApplyLocalSettings(settings)
-    state.local_settings = profile_store:Save(settings)
+    state.local_settings = NormalizeLocalSettings(settings)
     state.rows = state.local_settings.default_rows
     state.columns = state.local_settings.default_columns
 
@@ -1048,13 +1039,106 @@ function M.ApplyLocalSettings(settings)
     RefreshPreview(true)
 end
 
-function M.InstallInputHandlers()
+function M.InstallInputHandlers(submit_controller_request)
     if state.handlers_installed then
         return
     end
+    assert(
+        type(submit_controller_request) == "function",
+        "planting input requires a controller submit callback"
+    )
 
     state.handlers_installed = true
-    TheInput:AddMouseButtonHandler(OnMouseButton)
+    Input.RegisterAction({
+        id = Shared.INPUT_ROWS_INCREASE,
+        priority = 100,
+        bindings = {
+            {
+                device = "mouse",
+                code = MOUSEBUTTON_SCROLLUP,
+                modifiers = { ctrl = true, alt = false },
+            },
+            {
+                device = "controller",
+                virtual_control = VIRTUAL_CONTROL_INV_ACTION_UP,
+                consume_release = true,
+                repeatable = false,
+            },
+        },
+        handler = HandleLayoutInput,
+    })
+    Input.RegisterAction({
+        id = Shared.INPUT_ROWS_DECREASE,
+        priority = 100,
+        bindings = {
+            {
+                device = "mouse",
+                code = MOUSEBUTTON_SCROLLDOWN,
+                modifiers = { ctrl = true, alt = false },
+            },
+            {
+                device = "controller",
+                virtual_control = VIRTUAL_CONTROL_INV_ACTION_DOWN,
+                consume_release = true,
+                repeatable = false,
+            },
+        },
+        handler = HandleLayoutInput,
+    })
+    Input.RegisterAction({
+        id = Shared.INPUT_COLUMNS_INCREASE,
+        priority = 100,
+        bindings = {
+            {
+                device = "mouse",
+                code = MOUSEBUTTON_SCROLLUP,
+                modifiers = { ctrl = false, alt = true },
+            },
+            {
+                device = "controller",
+                virtual_control = VIRTUAL_CONTROL_INV_ACTION_RIGHT,
+                consume_release = true,
+                repeatable = false,
+            },
+        },
+        handler = HandleLayoutInput,
+    })
+    Input.RegisterAction({
+        id = Shared.INPUT_COLUMNS_DECREASE,
+        priority = 100,
+        bindings = {
+            {
+                device = "mouse",
+                code = MOUSEBUTTON_SCROLLDOWN,
+                modifiers = { ctrl = false, alt = true },
+            },
+            {
+                device = "controller",
+                virtual_control = VIRTUAL_CONTROL_INV_ACTION_LEFT,
+                consume_release = true,
+                repeatable = false,
+            },
+        },
+        handler = HandleLayoutInput,
+    })
+    Input.RegisterAction({
+        id = Shared.INPUT_CONFIRM,
+        priority = 100,
+        bindings = {
+            {
+                device = "controller",
+                code = CONTROL_CONTROLLER_ACTION,
+                consume_release = true,
+                repeatable = false,
+            },
+        },
+        handler = function(context)
+            return HandleControllerConfirm(
+                context,
+                submit_controller_request
+            )
+        end,
+    })
 end
 
 function M.ReceiveResult(request_id, reason)
@@ -1073,12 +1157,9 @@ function M.ReceiveResult(request_id, reason)
     end
 end
 
-function M.GetSettingsDefinition()
+function M.GetSettingsContribution()
     return {
-        title = Translated("settings.title"),
-        get_values = function()
-            return Values.CopyTable(state.local_settings)
-        end,
+        id = "planting",
         get_defaults = GetDefaultLocalSettings,
         normalize = NormalizeSettingsValues,
         apply = M.ApplyLocalSettings,
@@ -1094,6 +1175,12 @@ function M.GetSettingsDefinition()
                 label = Translated("settings.local_columns"),
                 hover = Translated("settings.columns_tooltip"),
                 options = DIMENSION_OPTIONS,
+            },
+            {
+                key = "execution_mode",
+                label = Translated("settings.execution_mode"),
+                hover = Translated("settings.execution_mode_tooltip"),
+                options = BuildExecutionModeOptions,
             },
             {
                 key = "placement_grid_opacity",

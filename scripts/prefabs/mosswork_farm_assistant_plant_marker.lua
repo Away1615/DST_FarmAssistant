@@ -1,4 +1,4 @@
-local Shared = require("mosswork/planting_assistant/shared")
+local Shared = require("mosswork/farm_assistant/planting/shared")
 
 local function GetSourceVisual(source_item)
     local anim_state = source_item ~= nil and source_item.AnimState or nil

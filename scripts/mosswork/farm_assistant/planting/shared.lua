@@ -1,19 +1,26 @@
 local Mosswork = require("mosswork")
 local Values = Mosswork.Values
+local FarmShared = require("mosswork/farm_assistant/shared")
 
 local M = {}
 
-M.MOD_ID = "mosswork.planting_assistant"
-M.MOD_VERSION = "0.3.0"
-M.MOSSWORK_API_VERSION = 1
+M.MOD_ID = FarmShared.MOD_ID
+M.MOD_VERSION = FarmShared.MOD_VERSION
+M.MOSSWORK_API_VERSION = FarmShared.MOSSWORK_API_VERSION
 
-M.RPC_NAMESPACE = "mosswork.planting_assistant"
+M.RPC_NAMESPACE = "mosswork.farm_assistant.planting"
 M.RPC_PLANT = "plant"
 M.RPC_CONTROLLER_PLANT = "controller_plant"
 M.RPC_RESULT = "result"
-M.ACTION_PLANT_ID = "MOSSWORK_PA_PLANT"
-M.PREFAB_PLANT_MARKER = "mosswork_pa_plant_marker"
-M.PREFAB_TILE_MARKER = "mosswork_pa_tile_marker"
+M.ACTION_PLANT_ID = "MOSSWORK_FARM_ASSISTANT_PLANT"
+M.ACTION_PLANT_ONE_ID = "MOSSWORK_FARM_ASSISTANT_PLANT_ONE"
+M.INPUT_ROWS_INCREASE = M.RPC_NAMESPACE .. ".rows_increase"
+M.INPUT_ROWS_DECREASE = M.RPC_NAMESPACE .. ".rows_decrease"
+M.INPUT_COLUMNS_INCREASE = M.RPC_NAMESPACE .. ".columns_increase"
+M.INPUT_COLUMNS_DECREASE = M.RPC_NAMESPACE .. ".columns_decrease"
+M.INPUT_CONFIRM = M.RPC_NAMESPACE .. ".confirm"
+M.PREFAB_PLANT_MARKER = "mosswork_farm_assistant_plant_marker"
+M.PREFAB_TILE_MARKER = "mosswork_farm_assistant_tile_marker"
 
 M.TILE_SIZE = 4
 M.DEFAULT_ROWS = 1
@@ -23,6 +30,9 @@ M.MAX_DIMENSION = 9
 M.MAX_LAYOUT_TILES_PER_AXIS = 9
 M.MAX_PLANTS_PER_TILE = 4
 M.PLACEMENT_GRID_OPACITY = 0.25
+M.EXECUTION_MODE_BATCH = "batch"
+M.EXECUTION_MODE_SEQUENTIAL = "sequential"
+M.DEFAULT_EXECUTION_MODE = M.EXECUTION_MODE_BATCH
 M.MIN_LAYOUT_SPACING = M.TILE_SIZE / M.MAX_PLANTS_PER_TILE
 M.MAX_LAYOUT_SPACING = M.TILE_SIZE
 M.MAX_DEPLOY_SPACING = 4
@@ -30,6 +40,7 @@ M.LAYOUT_EPSILON = 0.0001
 
 M.REQUEST_TIMEOUT = 30
 M.ACTION_ARRIVE_DISTANCE = 1.5
+M.PLANT_ONE_ARRIVE_DISTANCE = 1.1
 M.ACTION_EXECUTION_DISTANCE = 4
 M.BATCH_LEASH_DISTANCE = 8
 
@@ -225,6 +236,17 @@ function M.IsValidRequestId(value)
         and value == math.floor(value)
         and value >= 1
         and value <= 2147483647
+end
+
+function M.IsValidExecutionMode(value)
+    return value == M.EXECUTION_MODE_BATCH
+        or value == M.EXECUTION_MODE_SEQUENTIAL
+end
+
+function M.NormalizeExecutionMode(value)
+    return M.IsValidExecutionMode(value)
+            and value
+        or M.DEFAULT_EXECUTION_MODE
 end
 
 return M

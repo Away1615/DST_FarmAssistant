@@ -1,7 +1,7 @@
-local Shared = require("mosswork/planting_assistant/shared")
-local Layout = require("mosswork/planting_assistant/layout")
-local Common = require("mosswork/planting_assistant/server_common")
-local Batch = require("mosswork/planting_assistant/server_batch")
+local Shared = require("mosswork/farm_assistant/planting/shared")
+local Layout = require("mosswork/farm_assistant/planting/layout")
+local Common = require("mosswork/farm_assistant/planting/server_common")
+local Batch = require("mosswork/farm_assistant/planting/server_batch")
 
 local M = {}
 
@@ -24,6 +24,7 @@ function M.HandlePlantRequest(
     rows,
     columns,
     prefab,
+    execution_mode,
     source_guid
 )
     if player == nil then
@@ -50,10 +51,14 @@ function M.HandlePlantRequest(
         )
         return
     end
+    if execution_mode == nil then
+        execution_mode = Shared.DEFAULT_EXECUTION_MODE
+    end
     if not Shared.IsFiniteCoordinate(x)
         or not Shared.IsFiniteCoordinate(z)
         or not Shared.IsValidDimension(rows)
         or not Shared.IsValidDimension(columns)
+        or not Shared.IsValidExecutionMode(execution_mode)
         or type(prefab) ~= "string"
         or prefab == ""
         or #prefab > 128 then
@@ -135,6 +140,7 @@ function M.HandlePlantRequest(
         columns = layout.columns,
         anchor_x = layout.anchor_x,
         anchor_z = layout.anchor_z,
+        execution_mode = execution_mode,
         source_guid = normalized_source_guid,
         expires_at = GetTime() + Shared.REQUEST_TIMEOUT,
     }
@@ -171,6 +177,17 @@ local function BeginPreparedRequest(
         or source_item == nil
         or source_item.prefab ~= request.prefab then
         return false
+    end
+
+    if request.execution_mode == Shared.EXECUTION_MODE_SEQUENTIAL then
+        local first_point = Layout.GetTraversalPoint(layout, 1)
+        if first_point == nil
+            or math.abs(first_point.x - action_x)
+                > Shared.LAYOUT_EPSILON
+            or math.abs(first_point.z - action_z)
+                > Shared.LAYOUT_EPSILON then
+            return false
+        end
     end
 
     pending_requests[player] = nil
@@ -250,6 +267,7 @@ local function BeginPreparedRequest(
         native_spacing = request.native_spacing,
         plant_metadata = plant_metadata,
         layout = layout,
+        execution_mode = request.execution_mode,
         action_x = action_x,
         action_z = action_z,
         scan_index = 1,
@@ -285,7 +303,8 @@ function M.HandleControllerPlantRequest(
     rows,
     columns,
     prefab,
-    source_guid
+    source_guid,
+    execution_mode
 )
     if TheWorld == nil or not TheWorld.ismastersim then
         return false
@@ -299,6 +318,7 @@ function M.HandleControllerPlantRequest(
         rows,
         columns,
         prefab,
+        execution_mode,
         source_guid
     )
 
@@ -311,12 +331,87 @@ function M.HandleControllerPlantRequest(
         return false
     end
 
-    return BeginPreparedRequest(
+    local action_x = tonumber(x)
+    local action_z = tonumber(z)
+    if not Common.IsPlayerNearPoint(
         player,
-        Common.GetOwnedItemByGUID(player, normalized_source_guid),
-        tonumber(x),
-        tonumber(z)
+        action_x,
+        action_z,
+        Shared.ACTION_EXECUTION_DISTANCE
+    ) then
+        pending_requests[player] = nil
+        RejectRequest(player, request, "not_at_target")
+        return false
+    end
+
+    local layout = Layout.BuildSpecFromAnchor(
+        request.anchor_x,
+        request.anchor_z,
+        request.rows,
+        request.columns,
+        request.spacing
     )
+    if layout == nil then
+        pending_requests[player] = nil
+        RejectRequest(player, request, "invalid_ground")
+        return false
+    end
+    if request.execution_mode == Shared.EXECUTION_MODE_SEQUENTIAL then
+        local first_point = Layout.GetTraversalPoint(layout, 1)
+        if first_point == nil then
+            pending_requests[player] = nil
+            RejectRequest(player, request, "invalid_ground")
+            return false
+        end
+        action_x = first_point.x
+        action_z = first_point.z
+    end
+
+    local source_item = Common.GetOwnedItemByGUID(
+        player,
+        normalized_source_guid
+    )
+    local action_type = ACTIONS ~= nil
+        and ACTIONS[Shared.ACTION_PLANT_ID]
+        or nil
+    if source_item == nil
+        or action_type == nil
+        or BufferedAction == nil then
+        pending_requests[player] = nil
+        RejectRequest(player, request, "action_unavailable")
+        return false
+    end
+
+    local action = BufferedAction(
+        player,
+        nil,
+        action_type,
+        source_item,
+        Vector3(action_x, 0, action_z)
+    )
+    action.options.mosswork_server_initiated = true
+    action:AddFailAction(function()
+        if pending_requests[player] == request then
+            pending_requests[player] = nil
+            RejectRequest(player, request, "action_interrupted")
+        end
+    end)
+
+    local locomotor = player.components.locomotor
+    local completed = pcall(
+        locomotor.PushAction,
+        locomotor,
+        action,
+        true
+    )
+    if not completed or player:GetBufferedAction() ~= action then
+        if pending_requests[player] == request then
+            pending_requests[player] = nil
+            RejectRequest(player, request, "action_interrupted")
+        end
+        return false
+    end
+    return true
 end
 
 return M

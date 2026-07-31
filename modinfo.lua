@@ -13,11 +13,13 @@ local LANGUAGE_BY_LOCALE = {
     kr = "ko",
 }
 
+local DISPLAY_NAME = "丰耕助手 | Farm Assistant"
+
 local TRANSLATIONS = {
     en = {
-        name = "Planting Assistant",
+        name = DISPLAY_NAME,
         description = [[
-Server-authoritative batch planting assistant.
+Farm Assistant provides server-authoritative batch planting.
 
 Ctrl + Mouse Wheel: adjust rows
 Alt + Mouse Wheel: adjust columns
@@ -25,15 +27,15 @@ Right Mouse Button: confirm
 Controller D-pad: adjust rows and columns
 Controller Action / Alt Action: confirm / cancel
 
-Previews the layout, moves the character into range, plays one action, and plants valid positions while skipping blocked points.
+Previews the layout and skips blocked points. Choose one-action batch planting or sequential planting that automatically moves and performs one action per plant.
 Supports inventory items that use DST's native PLANT deploy mode. Rows and columns are limited to nine plants each.
 Requires Mosswork.
 ]],
     },
     zh = {
-        name = "种植助手",
+        name = DISPLAY_NAME,
         description = [[
-服务端权威的批量种植助手。
+Farm Assistant 提供服务端权威的批量种植功能。
 
 Ctrl + 鼠标滚轮：调整行数
 Alt + 鼠标滚轮：调整列数
@@ -41,15 +43,15 @@ Alt + 鼠标滚轮：调整列数
 手柄方向键：调整行数和列数
 手柄交互键 / 次要交互键：确认 / 取消
 
-预览阵列，让角色实际移动到范围内，只播放一次动作，并跳过阻挡点种下其他有效位置。
+预览阵列并跳过阻挡点。可选择一次动作完成整批种植，或让角色自动移动、每次动作种下一株。
 支持物品栏中使用 DST 原生 PLANT 部署模式的种植物。阵列行数和列数各不超过 9 株。
 依赖 Mosswork。
 ]],
     },
     es = {
-        name = "Asistente de plantación",
+        name = DISPLAY_NAME,
         description = [[
-Asistente de plantación en lote controlado por el servidor.
+Farm Assistant ofrece plantación en lote controlada por el servidor.
 
 Ctrl + Rueda del ratón: ajustar filas
 Alt + Rueda del ratón: ajustar columnas
@@ -57,15 +59,15 @@ Botón derecho: confirmar
 Cruceta del mando: ajustar filas y columnas
 Acción / Acción secundaria: confirmar / cancelar
 
-Previsualiza la distribución, acerca al personaje, reproduce una acción y planta las posiciones válidas omitiendo los puntos bloqueados.
+Previsualiza la distribución y omite los puntos bloqueados. Permite plantar todo con una acción o moverse automáticamente y plantar un objeto por acción.
 Admite objetos del inventario con el modo de despliegue PLANT nativo de DST. Las filas y columnas están limitadas a nueve plantas cada una.
 Requiere Mosswork.
 ]],
     },
     ru = {
-        name = "Помощник по посадке",
+        name = DISPLAY_NAME,
         description = [[
-Серверный помощник для массовой посадки.
+Farm Assistant обеспечивает серверную массовую посадку.
 
 Ctrl + Колесо мыши: изменить число строк
 Alt + Колесо мыши: изменить число столбцов
@@ -73,15 +75,15 @@ Alt + Колесо мыши: изменить число столбцов
 Крестовина геймпада: изменить строки и столбцы
 Действие / Альт. действие: подтвердить / отменить
 
-Показывает раскладку, подводит персонажа, воспроизводит одно действие и засаживает допустимые точки, пропуская препятствия.
+Показывает схему и пропускает препятствия. Можно посадить всё одним действием или автоматически перемещаться и сажать по одному предмету за действие.
 Поддерживает предметы инвентаря с режимом размещения PLANT из DST. Число растений в строках и столбцах ограничено девятью.
 Требуется Mosswork.
 ]],
     },
     fr = {
-        name = "Assistant de plantation",
+        name = DISPLAY_NAME,
         description = [[
-Assistant de plantation groupée contrôlé par le serveur.
+Farm Assistant propose une plantation groupée contrôlée par le serveur.
 
 Ctrl + Molette : régler les lignes
 Alt + Molette : régler les colonnes
@@ -89,15 +91,15 @@ Bouton droit : confirmer
 Croix directionnelle : régler les lignes et les colonnes
 Action / Action secondaire : confirmer / annuler
 
-Affiche la disposition, déplace le personnage à portée, joue une seule action et plante les positions valides en ignorant les points bloqués.
+Affiche la disposition et ignore les points bloqués. Choisissez une action pour tout planter ou le déplacement automatique avec une action par plante.
 Prend en charge les objets d’inventaire utilisant le mode de déploiement PLANT de DST. Les lignes et les colonnes sont limitées à neuf plantes chacune.
 Nécessite Mosswork.
 ]],
     },
     de = {
-        name = "Pflanzassistent",
+        name = DISPLAY_NAME,
         description = [[
-Servergesteuerter Assistent für Gruppenpflanzungen.
+Farm Assistant bietet servergesteuerte Gruppenpflanzungen.
 
 Strg + Mausrad: Zeilen anpassen
 Alt + Mausrad: Spalten anpassen
@@ -105,15 +107,15 @@ Rechte Maustaste: bestätigen
 Steuerkreuz: Zeilen und Spalten anpassen
 Aktion / Alternative Aktion: bestätigen / abbrechen
 
-Zeigt die Anordnung, bewegt die Figur in Reichweite, spielt eine Aktion ab und bepflanzt gültige Positionen unter Auslassung blockierter Punkte.
+Zeigt die Anordnung und überspringt blockierte Punkte. Wahlweise wird alles mit einer Aktion oder automatisch laufend Pflanze für Pflanze gesetzt.
 Unterstützt Inventargegenstände mit DSTs nativem PLANT-Platzierungsmodus. Zeilen und Spalten sind jeweils auf neun Pflanzen begrenzt.
 Benötigt Mosswork.
 ]],
     },
     ja = {
-        name = "植え付けアシスタント",
+        name = DISPLAY_NAME,
         description = [[
-サーバー管理の一括植え付けアシスタントです。
+Farm Assistant はサーバー管理の一括植え付け機能を提供します。
 
 Ctrl + マウスホイール：行数を変更
 Alt + マウスホイール：列数を変更
@@ -121,15 +123,15 @@ Alt + マウスホイール：列数を変更
 コントローラー方向キー：行数と列数を変更
 アクション / サブアクション：確定 / キャンセル
 
-配置をプレビューし、キャラクターを範囲内へ移動させ、1 回の動作で障害物を避けながら有効な位置へ植え付けます。
+配置をプレビューし、障害物を避けます。1 回の動作で一括植え付けするか、自動移動して1回の動作で1株ずつ植えるかを選べます。
 DST 標準の PLANT 配置モードを使う所持品に対応します。行と列はそれぞれ最大 9 株です。
 Mosswork が必要です。
 ]],
     },
     ko = {
-        name = "심기 도우미",
+        name = DISPLAY_NAME,
         description = [[
-서버 권한 방식의 일괄 심기 도우미입니다.
+Farm Assistant는 서버 권한 방식의 일괄 심기 기능을 제공합니다.
 
 Ctrl + 마우스 휠: 행 수 조절
 Alt + 마우스 휠: 열 수 조절
@@ -137,7 +139,7 @@ Alt + 마우스 휠: 열 수 조절
 컨트롤러 방향키: 행과 열 조절
 동작 / 보조 동작: 확인 / 취소
 
-배치를 미리 보여 주고 캐릭터를 범위 안으로 이동시킨 뒤, 한 번의 동작으로 막힌 지점을 건너뛰며 유효한 위치에 심습니다.
+배치를 미리 보여 주고 막힌 지점을 건너뜁니다. 한 번의 동작으로 일괄 심거나 자동 이동하며 동작마다 한 개씩 심을 수 있습니다.
 DST 기본 PLANT 배치 모드를 사용하는 소지품을 지원합니다. 행과 열은 각각 최대 9개입니다.
 Mosswork가 필요합니다.
 ]],
@@ -150,7 +152,7 @@ local selected = TRANSLATIONS[language]
 name = selected.name
 description = selected.description
 author = "Nooobad"
-version = "0.3.0"
+version = "0.5.0"
 
 icon_atlas = "modicon.xml"
 icon = "modicon.tex"
@@ -169,6 +171,7 @@ mod_dependencies = {
 }
 
 server_filter_tags = {
+    "farm",
     "planting",
     "utility",
 }

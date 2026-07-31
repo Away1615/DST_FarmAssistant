@@ -1,4 +1,4 @@
-local Shared = require("mosswork/planting_assistant/shared")
+local Shared = require("mosswork/farm_assistant/planting/shared")
 
 local M = {}
 

@@ -1,5 +1,7 @@
-local Shared = require("mosswork/planting_assistant/shared")
-local Log = require("mosswork").Log.Create(Shared.MOD_ID)
+local Shared = require("mosswork/farm_assistant/planting/shared")
+local Mosswork = require("mosswork")
+local Log = Mosswork.Log.Create(Shared.MOD_ID)
+local RPC = Mosswork.RPC.Create(Shared.RPC_NAMESPACE)
 
 local M = {}
 
@@ -96,9 +98,9 @@ function M.SendResult(player, request_id, reason)
         return
     end
 
-    SendModRPCToClient(
-        GetClientModRPC(Shared.RPC_NAMESPACE, Shared.RPC_RESULT),
-        player.userid,
+    RPC:SendToClient(
+        Shared.RPC_RESULT,
+        player,
         tonumber(request_id) or 0,
         reason or "unknown"
     )

@@ -2,7 +2,7 @@ local assets = {
     Asset("ANIM", "anim/gridplacer.zip"),
 }
 
-local Shared = require("mosswork/planting_assistant/shared")
+local Shared = require("mosswork/farm_assistant/planting/shared")
 
 local function MakeMarker()
     local inst = CreateEntity()

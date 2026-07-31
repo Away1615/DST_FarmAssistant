@@ -1,10 +1,10 @@
-# Planting Assistant | 种植助手
+# 丰耕助手 | Farm Assistant
 
 [English](#english) · [简体中文](#简体中文)
 
 Server-authoritative batch planting for Don't Starve Together.
 
-- Mod version: `0.3.0`
+- Mod version: `0.5.0`
 - Required base mod: `Mosswork`, API `1`
 - Author: `Nooobad`
 - License: [MIT](LICENSE)
@@ -13,7 +13,7 @@ Server-authoritative batch planting for Don't Starve Together.
 
 ### Overview
 
-Planting Assistant plans a rectangular planting layout from the turf under the
+Farm Assistant plans a rectangular planting layout from the turf under the
 mouse pointer or controller deploy reticle. It derives one fixed safe spacing
 from the selected item's native deploy spacing and fills each covered turf
 evenly. The server plants the valid positions as a bounded batch.
@@ -24,7 +24,7 @@ or exhausts the layout.
 
 ### Requirements
 
-Mosswork and Planting Assistant both use `all_clients_require_mod = true`.
+Mosswork and Farm Assistant both use `all_clients_require_mod = true`.
 The server and every joining player must load compatible versions of both mods.
 
 ### Controls
@@ -56,12 +56,13 @@ limited to `9` terrain tiles (`36` world units) per axis.
 
 Inventory and valid positions determine how many plants are actually consumed.
 
-One right-click records the mouse planting plan. DST moves the character into
-action range when needed, then automatically starts the batch. A controller
-confirmation uses the nearby native deploy reticle and the same server distance
-validation. The character never walks to every individual plant position.
+One right-click records the mouse planting plan. `Planting Method` controls how
+it runs: Batch moves into range and completes the plan in one character action;
+Sequential follows the same snake-like order, automatically moves between
+positions, and performs one planting action per item. A controller confirmation
+uses the nearby native deploy reticle and the same server distance validation.
 
-Planting Assistant does not replace left click, so original DST inventory drop
+Farm Assistant does not replace left click, so original DST inventory drop
 and movement behavior remains available.
 
 ### Preview
@@ -80,11 +81,16 @@ execution time so later valid positions can replace blocked ones.
 
 ### Settings
 
-Open the Mosswork settings hub and choose Planting Assistant:
+Open the Mosswork settings hub and choose Farm Assistant:
 
 - Default Rows
 - Default Columns
+- Planting Method
 - GP Grid Opacity
+
+`Planting Method` defaults to `Batch (One Action)`. Select
+`Sequential (Auto-move)` when each plant should use a visible character action.
+Manual movement or another action interrupts the remaining sequential plan.
 
 Spacing is always automatic. The layout is anchored to the turf under the
 cursor, calculates one fixed crop-safe value from the selected item's native
@@ -118,7 +124,7 @@ Chinese translation.
 
 ### Supported plantables
 
-Planting Assistant accepts an active item only when it:
+Farm Assistant accepts an active item only when it:
 
 - can exist in an inventory; and
 - uses DST's native `DEPLOYMODE.PLANT`.
@@ -132,13 +138,14 @@ path.
 ### Multiplayer safety
 
 - Client input and preview are predictive only.
-- One normal planting action walks to the clicked point and starts the batch;
-  there is no second action, custom crouching state, undo history, or request
-  cooldown.
+- Batch mode uses one normal planting action. Sequential mode reuses DST
+  locomotion and compatible short-action states for every plant; neither mode
+  adds a custom crouching state, undo history, or request cooldown.
 - The server validates request IDs, the active plantable, dimensions, derived
   spacing, arrival distance, inventory, and every deployment.
-- All players share a bounded per-tick planting budget with round-robin
-  scheduling; at most eight planting batches run concurrently.
+- One-action batches share a bounded per-tick planting budget with round-robin
+  scheduling. Sequential plans naturally run one plant action at a time. At
+  most eight planting plans run concurrently across both methods.
 - Plant metadata is resolved once for the current item instance and reused
   until that instance changes. Per-point validation does not repeatedly query
   deploy mode and spacing.
@@ -150,7 +157,9 @@ path.
   If the callback raises, a still-valid detached source is consumed before the
   batch stops; if it already invalidated the item, the state is treated as
   unknown. The mod never synthesizes a replacement item.
-- Players must remain near the original action point during execution.
+- Batch mode requires the player to remain near the original action point.
+  Sequential mode follows its planned points and stops when player input
+  interrupts the current automatic action.
 - Busy, timeout, extension, and internal failures appear as localized system
   messages. Distance, inventory shortage, and no-valid-position outcomes stay
   silent.
@@ -160,12 +169,22 @@ path.
 - Original and custom character StateGraphs receive a compatible action
   handler.
 
+### Architecture
+
+Farm Assistant is the product shell. Planting is an independent
+`planting` feature under `scripts/mosswork/farm_assistant/planting/`; later farm
+features keep their own actions, validation, and batch semantics.
+
+Shared keyboard/controller mappings, RPC transport, persistent profile storage,
+and bounded runtime caches come from Mosswork's public API. Farm Assistant does
+not require Mosswork's internal Lua file paths.
+
 ### Local development
 
 Keep both folders visible and enabled under the DST `mods` directory:
 
 - `Mosswork`
-- `PlantingAssistant`
+- `FarmAssistant`
 
 Restart the world after Lua changes. Check
 `Documents/Klei/DoNotStarveTogether/client_log.txt` and the cluster
@@ -175,7 +194,7 @@ Restart the world after Lua changes. Check
 
 ### 简介
 
-种植助手以鼠标指针或手柄部署准星所在的地皮为起点规划矩形种植阵列。
+丰耕助手以鼠标指针或手柄部署准星所在的地皮为起点规划矩形种植阵列。
 系统根据当前物品的原生部署间距计算一个固定安全值，并均匀填充每块地皮，
 随后由服务器把有效位置作为一个受限批次种下。
 
@@ -184,7 +203,7 @@ Restart the world after Lua changes. Check
 
 ### 依赖
 
-Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器以及
+Mosswork 和丰耕助手都使用 `all_clients_require_mod = true`。服务器以及
 所有加入的玩家都必须加载兼容版本的两个模组。
 
 ### 操作
@@ -213,11 +232,12 @@ HUD 会显示玩家当前实际映射的手柄按键，不写死 A/B 图标。
 
 实际消耗数量由库存和有效位置决定。
 
-一次右键会记录鼠标种植计划。需要移动时，DST 会先让角色进入动作范围，
-再自动开始整批种植。手柄确认使用原生部署准星的近距离目标，并经过相同的
-服务端距离校验。角色不需要逐个走到每株作物的位置。
+一次右键会记录鼠标种植计划。具体执行方式由“种植方式”决定：整批种植会
+让角色进入范围后用一次动作完成；逐株种植会按照相同的蛇形顺序自动移动，
+每株执行一次种植动作。手柄确认使用原生部署准星的近距离目标，并经过相同
+的服务端距离校验。
 
-种植助手不会覆写左键，原版物品栏丢弃和移动行为仍然可用。
+丰耕助手不会覆写左键，原版物品栏丢弃和移动行为仍然可用。
 
 ### 预览
 
@@ -233,17 +253,21 @@ HUD 会显示玩家当前实际映射的手柄按键，不写死 A/B 图标。
 
 ### 设置
 
-打开 Mosswork 设置中心并选择种植助手：
+打开 Mosswork 设置中心并选择丰耕助手：
 
 - 默认行数
 - 默认列数
+- 种植方式
 - GP Grid 透明度
+
+“种植方式”默认是“整批种植（一次动作）”。选择“逐株种植（自动移动）”后，
+每株都会播放可见的角色动作；玩家主动移动或执行其他动作会中断剩余计划。
 
 间距始终自动计算。阵列以鼠标指针或手柄部署准星所在的地皮为基准，根据
 当前物品的原生部署间距得到一个固定安全值，均匀填充每块 `4 × 4` 地皮，
 并且不会随当前行列变化。
 
-`GP Grid 透明度`只改变种植助手预览周围的 Geometric Placement Grid，
+`GP Grid 透明度`只改变丰耕助手种植预览周围的 Geometric Placement Grid，
 不会修改 Geometric Placement 的全局颜色、作物幽灵或地皮边框。
 
 个人设置保存在玩家本机。服务端不提供可配置的平衡参数，并独立执行全部
@@ -280,12 +304,12 @@ HUD 会显示玩家当前实际映射的手柄按键，不写死 A/B 图标。
 ### 联机安全
 
 - 客户端输入和预览只负责预测。
-- 单个普通种植动作会走到点击点并启动批次；不再存在第二动作、自定义
-  蹲下状态、撤销历史或请求冷却。
+- 整批模式只使用一个普通种植动作；逐株模式为每株复用 DST 原生移动和
+  兼容的短动作状态。两种模式都没有自定义蹲下状态、撤销历史或请求冷却。
 - 服务端校验请求 ID、活动种植物、行列、自动间距、到达距离、库存和
   每次部署。
-- 所有玩家通过轮转调度共享固定的单帧种植预算，同时执行的种植批次
-  最多为 8 个。
+- 一次动作模式通过轮转调度共享固定的单帧种植预算；逐株模式自然限制为
+  同一时间只执行一株动作。两种方式合计最多同时运行 8 个种植计划。
 - 种植物元数据只针对当前物品实例解析一次并复用，只有实例变化时才重新
   解析。逐点校验不会重复查询部署模式和间距。
 - 种植检查直接调用 DST 公开的 `Deployable` 方法。回调报错会停止并记录
@@ -294,7 +318,8 @@ HUD 会显示玩家当前实际映射的手柄按键，不写死 A/B 图标。
   如果明确失败且原物品仍有效，就把同一个物品归还。若回调抛错，会先消耗
   仍有效的已取出物品再停止；若物品已经失效，状态按未知处理。模组绝不会
   合成替代物品。
-- 执行期间玩家必须留在原动作点附近。
+- 整批模式执行期间玩家必须留在原动作点附近；逐株模式会沿规划点移动，
+  玩家输入打断当前自动动作时会停止剩余计划。
 - 繁忙、超时、扩展回调和内部故障会以当前语言的系统消息通知对应玩家；
   距离过远、库存不足和无有效位置保持静默。
 - 服务端日志会记录被拒绝的请求和失败批次摘要，并包含成功种植与阻挡
@@ -302,12 +327,21 @@ HUD 会显示玩家当前实际映射的手柄按键，不写死 A/B 图标。
 - RPC、Action、Prefab 和 Lua 模块标识均使用命名空间。
 - 原版和自定义人物 StateGraph 都会安装兼容的动作处理器。
 
+### 架构
+
+丰耕助手根模块只负责产品注册与功能组合。当前种植功能位于
+`scripts/mosswork/farm_assistant/planting/`，后续农业功能继续保留各自的动作、
+校验和批处理语义。
+
+统一键鼠/手柄映射、RPC 传输、持久档案和有界运行时缓存均通过 Mosswork
+公开 API 使用；丰耕助手不再依赖 Mosswork 内部 Lua 文件路径。
+
 ### 本地开发
 
 确保 DST `mods` 目录中能看到并启用：
 
 - `Mosswork`
-- `PlantingAssistant`
+- `FarmAssistant`
 
 Lua 修改后需要重新进入世界。加载或服务端动作失败时检查
 `Documents/Klei/DoNotStarveTogether/client_log.txt` 和集群目录中的
@@ -315,6 +349,6 @@ Lua 修改后需要重新进入世界。加载或服务端动作失败时检查
 
 ## License
 
-Planting Assistant 的原创代码采用 [MIT License](LICENSE)。Don't Starve
+丰耕助手的原创代码采用 [MIT License](LICENSE)。Don't Starve
 Together、Klei、Geometric Placement 以及第三方名称和游戏资源不属于
 本许可证授权范围。
