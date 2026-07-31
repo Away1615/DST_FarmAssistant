@@ -6,23 +6,14 @@ local Batch = require("mosswork/planting_assistant/server_batch")
 local M = {}
 
 local pending_requests = setmetatable({}, { __mode = "k" })
-local last_requests = setmetatable({}, { __mode = "k" })
-local last_ingress_requests = setmetatable({}, { __mode = "k" })
-local last_rate_limit_notices = setmetatable({}, { __mode = "k" })
 
-local function RejectPreparedRequest(player, request, reason)
+local function RejectRequest(player, request, reason, log_level)
     Common.RejectRequest(
         player,
         request ~= nil and request.request_id or 0,
-        reason
+        reason,
+        log_level
     )
-end
-
-local function GetPlantableFailureReason(
-    fallback,
-    callback_scope
-)
-    return Common.GetCallbackFailure(callback_scope) or fallback
 end
 
 function M.HandlePlantRequest(
@@ -32,19 +23,24 @@ function M.HandlePlantRequest(
     z,
     rows,
     columns,
-    prefab
+    prefab,
+    source_guid
 )
     if player == nil then
         return
     end
 
-    local now = GetTime()
-    local last_ingress = last_ingress_requests[player] or -math.huge
-    if now - last_ingress < Shared.RPC_INGRESS_INTERVAL then
+    pending_requests[player] = nil
+
+    if not Shared.IsValidRequestId(request_id) then
+        Common.RejectRequest(
+            player,
+            request_id,
+            "invalid_request",
+            "debug"
+        )
         return
     end
-    last_ingress_requests[player] = now
-
     if not Common.IsPlayerReadyToStart(player) then
         Common.RejectRequest(
             player,
@@ -54,32 +50,16 @@ function M.HandlePlantRequest(
         )
         return
     end
-
-    if not Shared.IsValidRequestId(request_id) then
-        Common.RejectRequest(player, request_id, "invalid_request", "debug")
-        return
-    end
-
-    local last_request = last_requests[player] or -math.huge
-    if now - last_request < Shared.REQUEST_COOLDOWN then
-        local last_notice =
-            last_rate_limit_notices[player] or -math.huge
-        if now - last_notice >= Shared.REQUEST_COOLDOWN then
-            last_rate_limit_notices[player] = now
-            Common.RejectRequest(player, request_id, "rate_limited")
-        end
-        return
-    end
-    last_requests[player] = now
-
     if not Shared.IsFiniteCoordinate(x)
         or not Shared.IsFiniteCoordinate(z)
         or not Shared.IsValidDimension(rows)
-        or not Shared.IsValidDimension(columns) then
+        or not Shared.IsValidDimension(columns)
+        or type(prefab) ~= "string"
+        or prefab == ""
+        or #prefab > 128 then
         Common.RejectRequest(player, request_id, "invalid_request")
         return
     end
-
     if Batch.HasActiveBatch(player) then
         Common.RejectRequest(player, request_id, "busy")
         return
@@ -90,27 +70,29 @@ function M.HandlePlantRequest(
     end
 
     local inventory = player.components.inventory
-    local item = inventory:GetActiveItem()
-    local callback_scope = Common.CreateCallbackScope()
-    local matches, match_reason = Common.IsMatchingDeployable(
-        item,
-        prefab
-    )
-    if not matches then
+    local normalized_source_guid = source_guid ~= nil
+        and tonumber(source_guid)
+        or nil
+    local source_item
+    if source_guid ~= nil then
+        source_item = Common.GetOwnedItemByGUID(
+            player,
+            normalized_source_guid
+        )
+    else
+        source_item = inventory:GetActiveItem()
+    end
+    if source_item == nil or source_item.prefab ~= prefab then
         Common.RejectRequest(
             player,
             request_id,
-            GetPlantableFailureReason(
-                match_reason or "active_item_changed",
-                callback_scope
-            )
+            "active_item_changed"
         )
         return
     end
-    local plant_metadata, metadata_reason = Common.GetPlantMetadata(
-        item,
-        callback_scope
-    )
+
+    local plant_metadata, metadata_reason =
+        Common.GetPlantMetadata(source_item, prefab)
     if plant_metadata == nil then
         Common.RejectRequest(
             player,
@@ -119,14 +101,14 @@ function M.HandlePlantRequest(
         )
         return
     end
-    local native_spacing = plant_metadata.native_spacing
 
-    local spacing = Shared.ResolvePlantSpacing(native_spacing)
+    local spacing = Shared.ResolvePlantSpacing(
+        plant_metadata.native_spacing
+    )
     if spacing == nil then
-        Common.RejectRequest(player, request_id, "invalid_request")
+        Common.RejectRequest(player, request_id, "not_deployable")
         return
     end
-
     if not Shared.IsValidLayoutFootprint(rows, columns, spacing) then
         Common.RejectRequest(player, request_id, "layout_too_large")
         return
@@ -147,92 +129,30 @@ function M.HandlePlantRequest(
     pending_requests[player] = {
         request_id = tonumber(request_id),
         prefab = prefab,
+        native_spacing = plant_metadata.native_spacing,
         spacing = spacing,
-        native_spacing = native_spacing,
-        rows = tonumber(rows),
-        columns = tonumber(columns),
+        rows = layout.rows,
+        columns = layout.columns,
         anchor_x = layout.anchor_x,
         anchor_z = layout.anchor_z,
-        expires_at = now + Shared.REQUEST_TIMEOUT,
-        callback_scope = callback_scope,
-        plant_metadata = plant_metadata,
+        source_guid = normalized_source_guid,
+        expires_at = GetTime() + Shared.REQUEST_TIMEOUT,
     }
 end
 
-function M.BeginPlantRequest(action)
-    if TheWorld == nil or not TheWorld.ismastersim or action == nil then
-        return false
-    end
-
-    local player = action.doer
-    local request = pending_requests[player]
-    pending_requests[player] = nil
+local function BeginPreparedRequest(
+    player,
+    source_item,
+    action_x,
+    action_z
+)
+    local request = player ~= nil and pending_requests[player] or nil
     if request == nil then
         return false
     end
 
-    if not Common.IsPlayerOperational(player) then
-        RejectPreparedRequest(player, request, "player_unavailable")
-        return false
-    end
-
-    if GetTime() > request.expires_at then
-        RejectPreparedRequest(player, request, "request_expired")
-        return false
-    end
-
-    if Batch.HasActiveBatch(player) then
-        RejectPreparedRequest(player, request, "busy")
-        return false
-    end
-    if not Batch.CanAcceptNewBatch(player) then
-        RejectPreparedRequest(player, request, "server_busy")
-        return false
-    end
-    local action_x, action_z = Common.ResolveActionPoint(action)
     if not Shared.IsFiniteCoordinate(action_x)
-        or not Shared.IsFiniteCoordinate(action_z)
-        or not Common.IsPlayerNearPoint(
-            player,
-            action_x,
-            action_z,
-            Shared.ACTION_EXECUTION_DISTANCE
-        ) then
-        RejectPreparedRequest(player, request, "not_at_target")
-        return false
-    end
-
-    local source_item, source_reason = Common.GetBoundActiveItem(
-        player,
-        action.invobject,
-        request.prefab
-    )
-    if source_item == nil then
-        RejectPreparedRequest(
-            player,
-            request,
-            GetPlantableFailureReason(
-                source_reason or "active_item_changed",
-                request.callback_scope
-            )
-        )
-        return false
-    end
-
-    local plant_metadata, metadata_reason = Common.GetPlantMetadata(
-        source_item,
-        request.callback_scope,
-        request.plant_metadata
-    )
-    if plant_metadata == nil then
-        RejectPreparedRequest(player, request, metadata_reason)
-        return false
-    end
-    local native_spacing = plant_metadata.native_spacing
-    if native_spacing == nil
-        or math.abs(native_spacing - request.native_spacing)
-            > Shared.LAYOUT_EPSILON then
-        RejectPreparedRequest(player, request, "spacing_changed")
+        or not Shared.IsFiniteCoordinate(action_z) then
         return false
     end
 
@@ -247,51 +167,156 @@ function M.BeginPlantRequest(action)
         or math.abs(layout.anchor_x - request.anchor_x)
             > Shared.LAYOUT_EPSILON
         or math.abs(layout.anchor_z - request.anchor_z)
-            > Shared.LAYOUT_EPSILON then
-        layout = nil
-    end
-
-    if layout == nil then
-        RejectPreparedRequest(player, request, "target_changed")
+            > Shared.LAYOUT_EPSILON
+        or source_item == nil
+        or source_item.prefab ~= request.prefab then
         return false
     end
 
-    local available = Common.CountDeployableItems(player, request.prefab)
-    if available <= 0 then
-        RejectPreparedRequest(
+    pending_requests[player] = nil
+
+    if not Common.IsPlayerOperational(player) then
+        RejectRequest(player, request, "player_unavailable")
+        return false
+    end
+    if GetTime() > request.expires_at then
+        RejectRequest(player, request, "request_expired")
+        return false
+    end
+    if Batch.HasActiveBatch(player) then
+        RejectRequest(player, request, "busy")
+        return false
+    end
+    if not Batch.CanAcceptNewBatch(player) then
+        RejectRequest(player, request, "server_busy")
+        return false
+    end
+    if not Common.IsPlayerNearPoint(
+        player,
+        action_x,
+        action_z,
+        Shared.ACTION_EXECUTION_DISTANCE
+    ) then
+        RejectRequest(player, request, "not_at_target")
+        return false
+    end
+
+    local bound_item, source_reason, plant_metadata
+    if request.source_guid ~= nil then
+        bound_item, source_reason, plant_metadata =
+            Common.GetBoundInventoryItem(
+                player,
+                source_item,
+                request.prefab,
+                request.source_guid
+            )
+    else
+        bound_item, source_reason, plant_metadata =
+            Common.GetBoundActiveItem(
+                player,
+                source_item,
+                request.prefab
+            )
+    end
+    if bound_item == nil then
+        RejectRequest(
             player,
             request,
-            GetPlantableFailureReason(
-                "no_inventory",
-                request.callback_scope
-            )
+            source_reason or "active_item_changed"
         )
         return false
     end
 
-    local batch = {
+    if math.abs(
+        plant_metadata.native_spacing - request.native_spacing
+    ) > Shared.LAYOUT_EPSILON then
+        RejectRequest(player, request, "spacing_changed")
+        return false
+    end
+
+    local available = Common.CountDeployableItems(
+        player,
+        request.prefab
+    )
+    if available <= 0 then
+        RejectRequest(player, request, "no_inventory")
+        return false
+    end
+
+    return Batch.Start(player, {
         request_id = request.request_id,
         prefab = request.prefab,
-        source_item = source_item,
-        native_spacing = native_spacing,
+        source_item = bound_item,
+        native_spacing = request.native_spacing,
+        plant_metadata = plant_metadata,
         layout = layout,
-        stage = "preflight",
-        scan_index = 1,
-        pending_point = nil,
         action_x = action_x,
         action_z = action_z,
-        action = nil,
-        watchdog_task = nil,
-        failure_reason = nil,
-        callback_scope = request.callback_scope,
-        plant_metadata = plant_metadata,
-        candidate_count = layout.candidate_count,
-        preflight_blocked_count = 0,
-        runtime_blocked_count = 0,
+        scan_index = 1,
+        remaining_plants = math.min(
+            layout.candidate_count,
+            available
+        ),
         planted_count = 0,
+        blocked_count = 0,
         registered = false,
-    }
-    return Batch.Start(player, batch)
+    })
+end
+
+function M.BeginPlantRequest(action)
+    if TheWorld == nil or not TheWorld.ismastersim or action == nil then
+        return false
+    end
+
+    local action_x, action_z = Common.ResolveActionPoint(action)
+    return BeginPreparedRequest(
+        action.doer,
+        action.invobject,
+        action_x,
+        action_z
+    )
+end
+
+function M.HandleControllerPlantRequest(
+    player,
+    request_id,
+    x,
+    z,
+    rows,
+    columns,
+    prefab,
+    source_guid
+)
+    if TheWorld == nil or not TheWorld.ismastersim then
+        return false
+    end
+
+    M.HandlePlantRequest(
+        player,
+        request_id,
+        x,
+        z,
+        rows,
+        columns,
+        prefab,
+        source_guid
+    )
+
+    local request = player ~= nil and pending_requests[player] or nil
+    local normalized_request_id = tonumber(request_id)
+    local normalized_source_guid = tonumber(source_guid)
+    if request == nil
+        or request.request_id ~= normalized_request_id
+        or request.source_guid ~= normalized_source_guid then
+        return false
+    end
+
+    return BeginPreparedRequest(
+        player,
+        Common.GetOwnedItemByGUID(player, normalized_source_guid),
+        tonumber(x),
+        tonumber(z)
+    )
 end
 
 return M

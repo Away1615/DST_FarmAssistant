@@ -1,19 +1,17 @@
 local Mosswork = require("mosswork")
-local Callback = Mosswork.Callback
 local Values = Mosswork.Values
 
 local M = {}
 
 M.MOD_ID = "mosswork.planting_assistant"
-M.MOD_VERSION = "0.2.1"
+M.MOD_VERSION = "0.3.0"
 M.MOSSWORK_API_VERSION = 1
 
 M.RPC_NAMESPACE = "mosswork.planting_assistant"
 M.RPC_PLANT = "plant"
+M.RPC_CONTROLLER_PLANT = "controller_plant"
 M.RPC_RESULT = "result"
-M.ACTION_PLAN_ID = "MOSSWORK_PA_PLAN_PLANT"
-M.ACTION_BATCH_ID = "MOSSWORK_PA_BATCH_PLANT"
-M.ACTION_MOVE_ID = "MOSSWORK_PA_MOVE_TO_PLANT"
+M.ACTION_PLANT_ID = "MOSSWORK_PA_PLANT"
 M.PREFAB_PLANT_MARKER = "mosswork_pa_plant_marker"
 M.PREFAB_TILE_MARKER = "mosswork_pa_tile_marker"
 
@@ -21,50 +19,32 @@ M.TILE_SIZE = 4
 M.DEFAULT_ROWS = 1
 M.DEFAULT_COLUMNS = 1
 M.MIN_DIMENSION = 1
+M.MAX_DIMENSION = 9
 M.MAX_LAYOUT_TILES_PER_AXIS = 9
 M.MAX_PLANTS_PER_TILE = 4
-M.MAX_DIMENSION =
-    M.MAX_LAYOUT_TILES_PER_AXIS * M.MAX_PLANTS_PER_TILE
-M.MAX_REQUEST_DISTANCE = 8
 M.PLACEMENT_GRID_OPACITY = 0.25
 M.MIN_LAYOUT_SPACING = M.TILE_SIZE / M.MAX_PLANTS_PER_TILE
 M.MAX_LAYOUT_SPACING = M.TILE_SIZE
-M.REQUEST_COOLDOWN = 1
+M.MAX_DEPLOY_SPACING = 4
+M.LAYOUT_EPSILON = 0.0001
+
 M.REQUEST_TIMEOUT = 30
-M.CLIENT_SERVER_SILENCE_TIMEOUT = 30
-M.BATCH_HEARTBEAT_INTERVAL = 5
+M.ACTION_ARRIVE_DISTANCE = 1.5
+M.ACTION_EXECUTION_DISTANCE = 4
+M.BATCH_LEASH_DISTANCE = 8
+
 M.PREVIEW_INTERVAL = 0.1
 M.VALIDATION_INTERVAL = 0.75
-M.CLIENT_PREVIEW_MARKER_LIMIT = 256
 M.CLIENT_MARKERS_PER_TICK = 32
 M.CLIENT_VALIDATION_POINTS_PER_TICK = 16
 M.CLIENT_PREVIEW_TIME_BUDGET_MS = 4
-M.CLIENT_PLANT_METADATA_CACHE_TIME = 0.5
-M.CLIENT_PLANT_METADATA_RETRY_TIME = 5
-M.GLOBAL_PREFLIGHT_POINTS_PER_TICK = 8
-M.PREFLIGHT_POINTS_PER_BATCH_TURN = 1
+M.CLIENT_VALIDATION_RETRY_TIME = 5
+M.CLIENT_SLOW_CALLBACK_THRESHOLD_MS = 6
+
 M.GLOBAL_PLANTS_PER_TICK = 4
 M.PLANTS_PER_BATCH_TURN = 1
 M.SCHEDULER_TIME_BUDGET_MS = 8
 M.MAX_ACTIVE_BATCHES = 8
-M.BATCH_WATCHDOG_INTERVAL = 1
-M.BATCH_STALL_TIMEOUT = 20
-M.PLANT_QUERY_CALLBACK_SLOW_THRESHOLD_MS = 6
-M.DEPLOY_CALLBACK_SLOW_THRESHOLD_MS = 16
-M.PLANT_QUERY_CALLBACK_TIMEOUT_MS = 50
-M.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT = 500000
-M.DEPLOY_CALLBACK_TIMEOUT_MS = 100
-M.DEPLOY_CALLBACK_INSTRUCTION_LIMIT = 1000000
-M.PLANT_CALLBACK_HOOK_INTERVAL = 10000
-M.BATCH_ACTION_STATE = "mosswork_pa_batch_plant"
-M.BATCH_ACTION_PERFORM_FRAME = 10
-M.BATCH_ACTION_DURATION_FRAMES = 16
-M.ACTION_ARRIVE_DISTANCE = 1.5
-M.ACTION_EXECUTION_DISTANCE = 4
-M.BATCH_LEASH_DISTANCE = 6
-M.LAYOUT_EPSILON = 0.0001
-M.MAX_DEPLOY_SPACING = 4
-M.RPC_INGRESS_INTERVAL = 0.1
 M.REJECTION_LOG_REPEAT_INTERVAL = 5
 
 M.PLANT_VISUALS = {
@@ -116,55 +96,29 @@ function M.GetPlantVisual(prefab)
     return type(prefab) == "string" and M.PLANT_VISUALS[prefab] or nil
 end
 
-function M.IsInventoryPlantable(item)
-    if item == nil or not item:IsValid() then
-        return false
-    end
-
-    local components = item.components
-    local deployable = components ~= nil and components.deployable or nil
-    if components ~= nil
-        and components.inventoryitem ~= nil
-        and deployable ~= nil
-        and deployable.GetDeployMode ~= nil then
-        local completed, deploy_mode, issue = Callback.Run(
-            "inventory plant GetDeployMode",
-            deployable.GetDeployMode,
-            {
-                timeout_ms = M.PLANT_QUERY_CALLBACK_TIMEOUT_MS,
-                instruction_limit =
-                    M.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT,
-                hook_interval = M.PLANT_CALLBACK_HOOK_INTERVAL,
-                quarantine_seconds = M.CLIENT_PLANT_METADATA_RETRY_TIME,
-            },
-            deployable
-        )
-        return completed
-            and issue == nil
-            and deploy_mode == DEPLOYMODE.PLANT
-    end
-
-    local inventory_item = item.replica ~= nil
+local function GetInventoryItemReplica(item)
+    return item ~= nil
+        and item:IsValid()
+        and item.replica ~= nil
         and item.replica.inventoryitem
         or nil
-    if inventory_item == nil or inventory_item.GetDeployMode == nil then
-        return false
+end
+
+function M.IsInventoryPlantable(item)
+    local inventory_item = GetInventoryItemReplica(item)
+    return inventory_item ~= nil
+        and inventory_item:GetDeployMode() == DEPLOYMODE.PLANT
+end
+
+function M.GetInventoryPlantSpacing(item)
+    local inventory_item = GetInventoryItemReplica(item)
+    if inventory_item == nil
+        or inventory_item:GetDeployMode() ~= DEPLOYMODE.PLANT then
+        return nil
     end
 
-    local completed, deploy_mode, issue = Callback.Run(
-        "inventory replica GetDeployMode",
-        inventory_item.GetDeployMode,
-        {
-            timeout_ms = M.PLANT_QUERY_CALLBACK_TIMEOUT_MS,
-            instruction_limit = M.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT,
-            hook_interval = M.PLANT_CALLBACK_HOOK_INTERVAL,
-            quarantine_seconds = M.CLIENT_PLANT_METADATA_RETRY_TIME,
-        },
-        inventory_item
-    )
-    return completed
-        and issue == nil
-        and deploy_mode == DEPLOYMODE.PLANT
+    local spacing = inventory_item:DeploySpacingRadius()
+    return M.IsValidSpacing(spacing) and spacing or nil
 end
 
 function M.ClampDimension(value)
@@ -220,34 +174,8 @@ function M.IsValidLayoutFootprint(rows, columns, spacing)
         and tile_columns <= M.MAX_LAYOUT_TILES_PER_AXIS
 end
 
-function M.GetMaximumDimensionForSpacing(spacing)
-    if not M.IsValidLayoutSpacing(spacing) then
-        return nil
-    end
-
-    return math.max(
-        M.MIN_DIMENSION,
-        math.min(
-            M.MAX_DIMENSION,
-            math.floor(
-                (
-                    M.MAX_LAYOUT_TILES_PER_AXIS * M.TILE_SIZE
-                        + M.LAYOUT_EPSILON
-                ) / tonumber(spacing)
-            )
-        )
-    )
-end
-
-function M.ClampLayoutDimensions(rows, columns, spacing)
-    rows = M.ClampDimension(rows)
-    columns = M.ClampDimension(columns)
-    local maximum = M.GetMaximumDimensionForSpacing(spacing)
-    if maximum ~= nil then
-        rows = math.min(rows, maximum)
-        columns = math.min(columns, maximum)
-    end
-    return rows, columns
+function M.ClampLayoutDimensions(rows, columns)
+    return M.ClampDimension(rows), M.ClampDimension(columns)
 end
 
 function M.IsFiniteCoordinate(value)
@@ -275,8 +203,7 @@ end
 
 function M.ResolvePlantSpacing(native_spacing)
     native_spacing = tonumber(native_spacing)
-    if native_spacing == nil
-        or not M.IsValidSpacing(native_spacing) then
+    if not M.IsValidSpacing(native_spacing) then
         return nil
     end
 

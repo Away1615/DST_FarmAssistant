@@ -2,12 +2,12 @@ local Mosswork = require("mosswork")
 local Shared = require("mosswork/planting_assistant/shared")
 local Layout = require("mosswork/planting_assistant/layout")
 local I18N = require("mosswork/planting_assistant/i18n")
-local Callback = Mosswork.Callback
 local Log = Mosswork.Log.Create(Shared.MOD_ID)
 local MossworkProfile = require("mosswork/profile")
 local Values = Mosswork.Values
 
 local M = {}
+local GetUiTime = GetStaticTime
 
 Mosswork.AssertAPIVersion(
     Shared.MOSSWORK_API_VERSION,
@@ -55,6 +55,8 @@ local profile_store = MossworkProfile.CreateOfficial(
 )
 
 local local_settings = profile_store:Load()
+local placement_marker_opacities =
+    setmetatable({}, { __mode = "k" })
 
 local state = {
     player = nil,
@@ -68,24 +70,12 @@ local state = {
     current = nil,
     handlers_installed = false,
     request_id = 0,
-    active_request_id = nil,
-    movement_deadline = 0,
-    server_deadline = 0,
-    request_phase = nil,
-    plan_action_seen = false,
-    plan_action_missing_since = 0,
-    plan_action_grace_until = 0,
+    controller_action_latched = false,
     hidden_native_placer = nil,
     hidden_native_placer_scale = nil,
-    cached_plant_item = nil,
-    cached_plant_spacing = nil,
-    cached_native_spacing = nil,
-    cached_plant_checked_at = -math.huge,
-    cached_plant_slow = false,
 }
 
 local FAILURE_MESSAGE_KEYS = {
-    rate_limited = "failure.rate_limited",
     busy = "failure.busy",
     server_busy = "failure.server_busy",
     no_inventory = "failure.no_inventory",
@@ -154,40 +144,6 @@ local function RemoveWorldMarkers()
     state.current = nil
 end
 
-local function ClearRequestState()
-    state.active_request_id = nil
-    state.movement_deadline = 0
-    state.server_deadline = 0
-    state.request_phase = nil
-    state.plan_action_seen = false
-    state.plan_action_missing_since = 0
-    state.plan_action_grace_until = 0
-end
-
-local function IsRequestPending()
-    if state.active_request_id == nil then
-        return false
-    end
-
-    if state.request_phase == "server" then
-        if GetStaticTime() < state.server_deadline then
-            return true
-        end
-
-        ShowFailureMessage("batch_timeout")
-        ClearRequestState()
-        return false
-    end
-
-    if GetStaticTime() < state.movement_deadline then
-        return true
-    end
-
-    ShowFailureMessage("request_expired")
-    ClearRequestState()
-    return false
-end
-
 local function IsGameplayScreenAvailable()
     local player = state.player
     if player == nil or player.HUD == nil then
@@ -212,87 +168,52 @@ local function HasClientPreviewTime(started_at)
             < Shared.CLIENT_PREVIEW_TIME_BUDGET_MS
 end
 
-local function GetDeploySpacing(item)
-    local inventory_item = item ~= nil
-        and item.replica ~= nil
-        and item.replica.inventoryitem
-        or nil
-    if inventory_item == nil or inventory_item.DeploySpacingRadius == nil then
-        return nil
+local function GetControllerDeploySelection(controller)
+    if TheInput == nil or not TheInput:ControllerAttached() then
+        return nil, nil, nil
     end
 
-    local completed, spacing, issue = Callback.Run(
-        "client plant DeploySpacingRadius",
-        inventory_item.DeploySpacingRadius,
-        {
-            timeout_ms = Shared.PLANT_QUERY_CALLBACK_TIMEOUT_MS,
-            instruction_limit =
-                Shared.PLANT_QUERY_CALLBACK_INSTRUCTION_LIMIT,
-            hook_interval = Shared.PLANT_CALLBACK_HOOK_INTERVAL,
-            quarantine_seconds = Shared.CLIENT_PLANT_METADATA_RETRY_TIME,
-        },
-        inventory_item
-    )
-    return completed
-        and issue == nil
-        and Shared.IsValidSpacing(spacing)
-        and spacing
+    local player = state.player
+    controller = controller or (
+        player ~= nil
+        and player.components ~= nil
+        and player.components.playercontroller
         or nil
+    )
+    local deployplacer = controller ~= nil and controller.deployplacer or nil
+    local placer = deployplacer ~= nil
+        and deployplacer:IsValid()
+        and deployplacer.components ~= nil
+        and deployplacer.components.placer
+        or nil
+    local item = placer ~= nil and placer.invobject or nil
+    if not Shared.IsInventoryPlantable(item) then
+        return nil, nil, nil
+    end
+    return item, deployplacer, placer
 end
 
 local function GetActivePlant()
     local player = state.player
     local inventory = player ~= nil and player.replica ~= nil and player.replica.inventory or nil
     local item = inventory ~= nil and inventory:GetActiveItem() or nil
-    local now = GetStaticTime()
-    if item == state.cached_plant_item
-        and (
-            (
-                state.cached_plant_slow
-                and now - state.cached_plant_checked_at
-                    < Shared.CLIENT_PLANT_METADATA_RETRY_TIME
-            )
-            or (
-                not state.cached_plant_slow
-                and now - state.cached_plant_checked_at
-                    < Shared.CLIENT_PLANT_METADATA_CACHE_TIME
-            )
-        ) then
-        return item,
-            state.cached_plant_spacing,
-            state.cached_native_spacing
+    local native_spacing = Shared.GetInventoryPlantSpacing(item)
+    if native_spacing == nil then
+        item = GetControllerDeploySelection()
+        native_spacing = Shared.GetInventoryPlantSpacing(item)
     end
-
-    local started_at = GetRealTimeMilliseconds()
-    local native_spacing = item ~= nil
-        and Shared.IsInventoryPlantable(item)
-        and GetDeploySpacing(item)
-        or nil
     local spacing = native_spacing ~= nil
         and Shared.ResolvePlantSpacing(native_spacing)
         or nil
-    local finished_at = GetRealTimeMilliseconds()
-    local callback_was_slow = started_at ~= nil
-        and finished_at ~= nil
-        and finished_at - started_at
-            >= Shared.PLANT_QUERY_CALLBACK_SLOW_THRESHOLD_MS
-    if callback_was_slow then
-        Log:Warn(
-            "slow client plant metadata prefab=%s elapsed_ms=%.2f;"
-                .. " result accepted",
-            item ~= nil and tostring(item.prefab) or "unknown",
-            finished_at - started_at
-        )
-    end
+    return item, spacing, native_spacing
+end
 
-    state.cached_plant_item = item
-    state.cached_plant_checked_at = now
-    state.cached_plant_slow = callback_was_slow
-    state.cached_native_spacing = native_spacing
-    state.cached_plant_spacing = spacing
-    return item,
-        state.cached_plant_spacing,
-        state.cached_native_spacing
+local function GetPlacementPosition()
+    local _, deployplacer = GetControllerDeploySelection()
+    if deployplacer ~= nil then
+        return deployplacer:GetPosition()
+    end
+    return TheInput ~= nil and TheInput:GetWorldPosition() or nil
 end
 
 local function ReplicaStackSize(item)
@@ -373,16 +294,6 @@ local function EnsureTileMarker(index)
     return marker
 end
 
-local function TrimMarkers(markers, wanted)
-    for index = #markers, wanted + 1, -1 do
-        local marker = markers[index]
-        if marker ~= nil and marker:IsValid() then
-            marker:Remove()
-        end
-        markers[index] = nil
-    end
-end
-
 local function HideMarkers(markers)
     for _, marker in ipairs(markers) do
         if marker ~= nil and marker:IsValid() then
@@ -392,7 +303,7 @@ local function HideMarkers(markers)
 end
 
 local function CanClientDeploy(item, point, current)
-    local now = GetStaticTime()
+    local now = GetUiTime()
     if current.validation_disabled_until ~= nil
         and now < current.validation_disabled_until then
         return nil
@@ -425,15 +336,15 @@ local function CanClientDeploy(item, point, current)
             tostring(can_deploy)
         )
         current.validation_disabled_until =
-            now + Shared.CLIENT_PLANT_METADATA_RETRY_TIME
+            now + Shared.CLIENT_VALIDATION_RETRY_TIME
         return nil
     end
     if started_at ~= nil
         and finished_at ~= nil
         and finished_at - started_at
-            >= Shared.PLANT_QUERY_CALLBACK_SLOW_THRESHOLD_MS
+            >= Shared.CLIENT_SLOW_CALLBACK_THRESHOLD_MS
         and now - current.last_slow_validation_log_time
-            >= Shared.CLIENT_PLANT_METADATA_RETRY_TIME then
+            >= Shared.CLIENT_VALIDATION_RETRY_TIME then
         current.last_slow_validation_log_time = now
         Log:Warn(
             "slow client plant CanDeploy prefab=%s elapsed_ms=%.2f;"
@@ -483,13 +394,10 @@ local function RebuildLayout(
 
     local preview_count = math.min(
         layout.candidate_count,
-        inventory_count,
-        Shared.CLIENT_PREVIEW_MARKER_LIMIT
+        inventory_count
     )
     HideMarkers(state.plant_markers)
     HideMarkers(state.tile_markers)
-    TrimMarkers(state.plant_markers, preview_count)
-    TrimMarkers(state.tile_markers, layout.tile_count)
 
     for index = 1, layout.tile_count do
         local tile = Layout.GetTile(layout, index)
@@ -549,8 +457,7 @@ end
 
 local function StartValidationCycle(current, now)
     current.validation_index = 1
-    current.validation_inventory_count =
-        CountClientInventory(current.prefab)
+    current.validation_inventory_count = current.inventory_count
     current.simulated_plant_count = 0
     current.next_validation_time = now
 end
@@ -562,7 +469,7 @@ local function RefreshValidation(item, force)
         return
     end
 
-    local now = GetStaticTime()
+    local now = GetUiTime()
     if force then
         StartValidationCycle(current, now)
     elseif current.validation_index == nil then
@@ -629,11 +536,6 @@ local function RefreshPreview(force_validation)
         return
     end
 
-    if IsRequestPending() then
-        RemoveWorldMarkers()
-        return
-    end
-
     local item, spacing, native_spacing = GetActivePlant()
     if item == nil or spacing == nil or native_spacing == nil then
         RemoveWorldMarkers()
@@ -642,19 +544,18 @@ local function RefreshPreview(force_validation)
     local inventory_count = CountClientInventory(item.prefab)
     state.rows, state.columns = Shared.ClampLayoutDimensions(
         state.rows,
-        state.columns,
-        spacing
+        state.columns
     )
 
-    local mouse_position = TheInput:GetWorldPosition()
-    if mouse_position == nil then
+    local placement_position = GetPlacementPosition()
+    if placement_position == nil then
         RemoveWorldMarkers()
         return
     end
 
     local anchor_x, anchor_z = Layout.GetAnchorAtPoint(
-        mouse_position.x,
-        mouse_position.z
+        placement_position.x,
+        placement_position.z
     )
     if anchor_x == nil or anchor_z == nil then
         RemoveWorldMarkers()
@@ -695,12 +596,18 @@ local function ApplyPlacementMarkerOpacity(marker)
         return
     end
 
+    local opacity = state.local_settings.placement_grid_opacity
+    if placement_marker_opacities[marker] == opacity then
+        return
+    end
+
     marker.AnimState:SetMultColour(
         1,
         1,
         1,
-        state.local_settings.placement_grid_opacity
+        opacity
     )
+    placement_marker_opacities[marker] = opacity
 end
 
 local function RestoreNativePlacementVisuals()
@@ -724,11 +631,17 @@ local function RefreshNativePlacementVisuals()
         or nil
     local deployplacer = controller ~= nil and controller.deployplacer or nil
     local item, spacing, native_spacing = GetActivePlant()
+    local placer = deployplacer ~= nil
+        and deployplacer.components ~= nil
+        and deployplacer.components.placer
+        or nil
     if item == nil
         or spacing == nil
         or native_spacing == nil
         or deployplacer == nil
-        or not deployplacer:IsValid() then
+        or not deployplacer:IsValid()
+        or placer == nil
+        or placer.invobject ~= item then
         RestoreNativePlacementVisuals()
         return
     end
@@ -752,13 +665,6 @@ local function RefreshNativePlacementVisuals()
         deployplacer.Transform:SetScale(0, 0, 0)
     end
 
-    local placer = deployplacer.components ~= nil
-        and deployplacer.components.placer
-        or nil
-    if placer == nil then
-        return
-    end
-
     ApplyPlacementMarkerOpacity(placer.gridinst)
     if type(placer.build_grid) == "table" then
         for _, row in pairs(placer.build_grid) do
@@ -771,68 +677,10 @@ local function RefreshNativePlacementVisuals()
     end
 end
 
-local function HasBufferedPlanningAction()
-    local player = state.player
-    if player == nil or not player:IsValid() then
-        return false
-    end
-
-    local action = player.GetBufferedAction ~= nil
-        and player:GetBufferedAction()
-        or nil
-    if action == nil
-        and player.components ~= nil
-        and player.components.locomotor ~= nil then
-        action = player.components.locomotor.bufferedaction
-    end
-
-    if action == nil or action.action == nil then
-        return false
-    end
-
-    local action_id = action.action.id
-    return action_id == Shared.ACTION_PLAN_ID
-        or action_id == Shared.ACTION_MOVE_ID
-end
-
-local function UpdatePendingPlanAction()
-    if state.active_request_id == nil or state.request_phase ~= "moving" then
-        return
-    end
-
-    local now = GetStaticTime()
-    if now >= state.movement_deadline then
-        ShowFailureMessage("request_expired")
-        ClearRequestState()
-        return
-    end
-
-    if HasBufferedPlanningAction() then
-        state.plan_action_seen = true
-        state.plan_action_missing_since = 0
-        return
-    end
-
-    if now < state.plan_action_grace_until then
-        return
-    end
-
-    if state.plan_action_missing_since <= 0 then
-        state.plan_action_missing_since = now
-        return
-    end
-
-    local cancel_delay = state.plan_action_seen
-            and Shared.BATCH_HEARTBEAT_INTERVAL * 2 + 1
-        or 2
-    if now - state.plan_action_missing_since >= cancel_delay then
-        ShowFailureMessage("action_interrupted")
-        ClearRequestState()
-    end
-end
-
 local function OnPreviewTick()
-    UpdatePendingPlanAction()
+    if TheInput == nil or not TheInput:ControllerAttached() then
+        state.controller_action_latched = false
+    end
     RefreshPreview(false)
     RefreshNativePlacementVisuals()
 end
@@ -847,10 +695,10 @@ local function OnPlayerRemoved(player)
     end
     RestoreNativePlacementVisuals()
     RemoveWorldMarkers()
-    ClearRequestState()
     state.player = nil
     state.update_task = nil
     state.listener_player = nil
+    state.controller_action_latched = false
 end
 
 local DIMENSION_OPTIONS = {}
@@ -885,23 +733,41 @@ local function IsModifierDown(key)
     return TheInput ~= nil and TheInput:IsKeyDown(key)
 end
 
-local function CanHandlePlantingInput()
+local function GetPlantingInput()
     if state.player == nil or state.player ~= ThePlayer or not IsGameplayScreenAvailable() then
-        return false
+        return nil, nil
     end
 
     local item, spacing = GetActivePlant()
-    return item ~= nil and spacing ~= nil
+    if item == nil or spacing == nil then
+        return nil, nil
+    end
+    return item, spacing
+end
+
+local function AdjustLayout(rows_delta, columns_delta, spacing)
+    local rows = Shared.ClampDimension(state.rows + rows_delta)
+    local columns = Shared.ClampDimension(
+        state.columns + columns_delta
+    )
+    if not Shared.IsValidLayoutFootprint(rows, columns, spacing) then
+        RefreshPreview(false)
+        return
+    end
+
+    state.rows = rows
+    state.columns = columns
+    RefreshPreview(true)
 end
 
 local function OnMouseButton(button, down)
     if not down
-        or (button ~= MOUSEBUTTON_SCROLLUP and button ~= MOUSEBUTTON_SCROLLDOWN)
-        or not CanHandlePlantingInput() then
+        or (button ~= MOUSEBUTTON_SCROLLUP and button ~= MOUSEBUTTON_SCROLLDOWN) then
         return
     end
 
-    if IsRequestPending() then
+    local _, spacing = GetPlantingInput()
+    if spacing == nil then
         return
     end
 
@@ -916,34 +782,13 @@ local function OnMouseButton(button, down)
         and state.player.components.playercontroller
         or nil
     if controller ~= nil then
-        controller.lastzoomtime = GetStaticTime()
+        controller.lastzoomtime = GetUiTime()
     end
 
-    local _, spacing = GetActivePlant()
     if adjusts_rows then
-        local rows = Shared.ClampDimension(state.rows + delta)
-        if not Shared.IsValidLayoutFootprint(
-            rows,
-            state.columns,
-            spacing
-        ) then
-            RefreshPreview(false)
-            return
-        end
-        state.rows = rows
-        RefreshPreview(true)
+        AdjustLayout(delta, 0, spacing)
     elseif adjusts_columns then
-        local columns = Shared.ClampDimension(state.columns + delta)
-        if not Shared.IsValidLayoutFootprint(
-            state.rows,
-            columns,
-            spacing
-        ) then
-            RefreshPreview(false)
-            return
-        end
-        state.columns = columns
-        RefreshPreview(true)
+        AdjustLayout(0, delta, spacing)
     end
 end
 
@@ -970,21 +815,7 @@ local function ResolveActionPoint(action)
     return nil, nil
 end
 
-function M.PreparePlantRequest(action)
-    if not CanHandlePlantingInput() then
-        return nil
-    end
-
-    RefreshPreview(true)
-    local active_item, spacing = GetActivePlant()
-    if active_item == nil
-        or spacing == nil
-        or action == nil
-        or action.invobject ~= active_item then
-        return nil
-    end
-
-    local x, z = ResolveActionPoint(action)
+local function BuildPlantRequest(item, spacing, x, z)
     if not Shared.IsFiniteCoordinate(x) or not Shared.IsFiniteCoordinate(z) then
         return nil
     end
@@ -1001,14 +832,6 @@ function M.PreparePlantRequest(action)
     end
 
     local request_id = NextRequestId()
-    local now = GetStaticTime()
-    state.active_request_id = request_id
-    state.movement_deadline = now + Shared.REQUEST_TIMEOUT
-    state.server_deadline = 0
-    state.request_phase = "moving"
-    state.plan_action_seen = false
-    state.plan_action_missing_since = 0
-    state.plan_action_grace_until = now + 0.75
 
     return {
         request_id = request_id,
@@ -1016,8 +839,171 @@ function M.PreparePlantRequest(action)
         z = z,
         rows = requested_layout.rows,
         columns = requested_layout.columns,
-        prefab = active_item.prefab,
+        prefab = item.prefab,
     }
+end
+
+function M.PreparePlantRequest(action)
+    local active_item, spacing = GetPlantingInput()
+    if active_item == nil
+        or spacing == nil
+        or action == nil
+        or action.invobject ~= active_item then
+        return nil
+    end
+
+    local x, z = ResolveActionPoint(action)
+    return BuildPlantRequest(active_item, spacing, x, z)
+end
+
+local function GetControllerLayoutDelta(control)
+    if TheInput == nil or TheInput.ResolveVirtualControls == nil then
+        return nil, nil
+    end
+
+    if control == TheInput:ResolveVirtualControls(
+        VIRTUAL_CONTROL_INV_ACTION_UP
+    ) then
+        return 1, 0
+    elseif control == TheInput:ResolveVirtualControls(
+        VIRTUAL_CONTROL_INV_ACTION_DOWN
+    ) then
+        return -1, 0
+    elseif control == TheInput:ResolveVirtualControls(
+        VIRTUAL_CONTROL_INV_ACTION_LEFT
+    ) then
+        return 0, -1
+    elseif control == TheInput:ResolveVirtualControls(
+        VIRTUAL_CONTROL_INV_ACTION_RIGHT
+    ) then
+        return 0, 1
+    end
+    return nil, nil
+end
+
+function M.HandleControllerControl(controller, control, down)
+    if control == CONTROL_CONTROLLER_ACTION
+        and not down
+        and state.controller_action_latched then
+        state.controller_action_latched = false
+        return true, nil
+    end
+
+    local item, deployplacer, placer =
+        GetControllerDeploySelection(controller)
+    if item == nil
+        or controller == nil
+        or controller.inst ~= state.player
+        or not IsGameplayScreenAvailable() then
+        return false, nil
+    end
+
+    if control == CONTROL_CONTROLLER_ACTION then
+        if state.controller_action_latched then
+            return true, nil
+        end
+        state.controller_action_latched = true
+        if placer.can_build ~= true then
+            return true, nil
+        end
+
+        local native_spacing = Shared.GetInventoryPlantSpacing(item)
+        local spacing = native_spacing ~= nil
+            and Shared.ResolvePlantSpacing(native_spacing)
+            or nil
+        local point = deployplacer:GetPosition()
+        if spacing == nil or point == nil then
+            return true, nil
+        end
+
+        local request = BuildPlantRequest(
+            item,
+            spacing,
+            point.x,
+            point.z
+        )
+        if request ~= nil then
+            request.source_guid = item.GUID
+        end
+        return true, request
+    end
+
+    local rows_delta, columns_delta =
+        GetControllerLayoutDelta(control)
+    if rows_delta == nil then
+        return false, nil
+    end
+    if down then
+        local spacing = Shared.GetInventoryPlantSpacing(item)
+        spacing = spacing ~= nil
+            and Shared.ResolvePlantSpacing(spacing)
+            or nil
+        if spacing ~= nil then
+            AdjustLayout(rows_delta, columns_delta, spacing)
+        end
+    end
+    return true, nil
+end
+
+function M.UpdateControllerHint(controls)
+    local player = controls ~= nil and controls.owner or nil
+    local controller = player ~= nil
+        and player.components ~= nil
+        and player.components.playercontroller
+        or nil
+    local _, deployplacer, placer =
+        GetControllerDeploySelection(controller)
+    local hint = controls ~= nil and controls.groundactionhint or nil
+    if deployplacer == nil
+        or placer == nil
+        or hint == nil
+        or not IsGameplayScreenAvailable() then
+        return
+    end
+
+    local controller_id = TheInput:GetControllerID()
+    local lines = {}
+    if placer.can_build == true then
+        lines[#lines + 1] = TheInput:GetLocalizedControl(
+            controller_id,
+            CONTROL_CONTROLLER_ACTION
+        ) .. " " .. I18N.Translate("action.batch")
+    end
+    lines[#lines + 1] = string.format(
+        "%s + / %s -  %s",
+        TheInput:GetLocalizedControl(
+            controller_id,
+            VIRTUAL_CONTROL_INV_ACTION_UP
+        ),
+        TheInput:GetLocalizedControl(
+            controller_id,
+            VIRTUAL_CONTROL_INV_ACTION_DOWN
+        ),
+        string.format(I18N.Translate("controller.rows"), state.rows)
+    )
+    lines[#lines + 1] = string.format(
+        "%s - / %s +  %s",
+        TheInput:GetLocalizedControl(
+            controller_id,
+            VIRTUAL_CONTROL_INV_ACTION_LEFT
+        ),
+        TheInput:GetLocalizedControl(
+            controller_id,
+            VIRTUAL_CONTROL_INV_ACTION_RIGHT
+        ),
+        string.format(
+            I18N.Translate("controller.columns"),
+            state.columns
+        )
+    )
+    lines[#lines + 1] = TheInput:GetLocalizedControl(
+        controller_id,
+        CONTROL_CONTROLLER_ALTACTION
+    ) .. " " .. STRINGS.UI.HUD.CANCEL
+
+    hint:Show()
+    hint:SetTarget(deployplacer)
+    hint.text:SetString(table.concat(lines, "\n"))
 end
 
 function M.Attach(player)
@@ -1034,7 +1020,6 @@ function M.Attach(player)
         end
         RestoreNativePlacementVisuals()
         RemoveWorldMarkers()
-        ClearRequestState()
     end
 
     state.player = player
@@ -1072,29 +1057,16 @@ function M.InstallInputHandlers()
     TheInput:AddMouseButtonHandler(OnMouseButton)
 end
 
-function M.IsRequestPending()
-    return IsRequestPending()
-end
-
 function M.ReceiveResult(request_id, reason)
     request_id = tonumber(request_id)
-    if request_id == nil
-        or state.active_request_id == nil
-        or request_id ~= state.active_request_id then
+    if request_id == nil then
         return
     end
 
     if reason == "started" or reason == "progress" then
-        state.request_phase = "server"
-        state.movement_deadline = 0
-        state.server_deadline =
-            GetStaticTime() + Shared.CLIENT_SERVER_SILENCE_TIMEOUT
-        state.plan_action_missing_since = 0
-        RefreshPreview(false)
         return
     end
 
-    ClearRequestState()
     RefreshPreview(true)
     if reason ~= "success" then
         ShowFailureMessage(reason)

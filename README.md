@@ -4,7 +4,7 @@
 
 Server-authoritative batch planting for Don't Starve Together.
 
-- Mod version: `0.2.1`
+- Mod version: `0.3.0`
 - Required base mod: `Mosswork`, API `1`
 - Author: `Nooobad`
 - License: [MIT](LICENSE)
@@ -14,9 +14,9 @@ Server-authoritative batch planting for Don't Starve Together.
 ### Overview
 
 Planting Assistant plans a rectangular planting layout from the turf under the
-mouse. It derives one fixed safe spacing from the selected item's native deploy
-spacing and fills each covered turf evenly. The character moves into range,
-plays one action, and the server plants the valid positions as a bounded batch.
+mouse pointer or controller deploy reticle. It derives one fixed safe spacing
+from the selected item's native deploy spacing and fills each covered turf
+evenly. The server plants the valid positions as a bounded batch.
 
 Blocked positions are skipped. The server continues through later candidates
 inside the same fixed rectangle until it reaches the available inventory quota
@@ -29,6 +29,8 @@ The server and every joining player must load compatible versions of both mods.
 
 ### Controls
 
+Mouse and keyboard:
+
 1. Pick up an inventory item whose native deploy mode is `PLANT`, so it becomes
    the active cursor item.
 2. Point at the turf that should become the layout origin.
@@ -36,18 +38,28 @@ The server and every joining player must load compatible versions of both mods.
 4. Hold `Alt` and use the mouse wheel to change columns.
 5. Right-click to confirm.
 
-The default layout is `1 × 1`. The number of candidates allowed on each axis
-depends on the selected plant's automatic spacing: up to `36` at `1`, `27` at
-`4/3`, `18` at `2`, or `9` at `4` world units. Width and height are each limited
-to `9` terrain tiles (`36` world units).
+Controller:
 
-There is no separate `81`-plant limit. Inventory and valid positions determine
-how many plants are actually consumed; the `9 × 9`-turf boundary is the layout
-safety limit.
+1. Select the plantable item and enter DST's normal deploy mode.
+2. Use D-pad Up/Down to increase/decrease rows.
+3. Use D-pad Left/Right to decrease/increase columns.
+4. Press the standard action button (A by default) to confirm, or the standard
+   alternate-action button (B by default) to cancel.
 
-One right-click records the planting plan. DST moves the character into action
-range when needed, then automatically starts the batch. The character never
-walks to every individual plant position.
+The HUD uses the player's current controller mappings instead of hard-coded
+button names.
+
+The default layout is `1 × 1`. Rows and columns can each be adjusted from `1`
+to `9`, so one batch contains at most `81` candidate positions. Spacing is
+selected automatically for the active plant, and the layout footprint remains
+limited to `9` terrain tiles (`36` world units) per axis.
+
+Inventory and valid positions determine how many plants are actually consumed.
+
+One right-click records the mouse planting plan. DST moves the character into
+action range when needed, then automatically starts the batch. A controller
+confirmation uses the nearby native deploy reticle and the same server distance
+validation. The character never walks to every individual plant position.
 
 Planting Assistant does not replace left click, so original DST inventory drop
 and movement behavior remains available.
@@ -120,33 +132,31 @@ path.
 ### Multiplayer safety
 
 - Client input and preview are predictive only.
-- The server validates request IDs, active plantable items, distance,
-  dimensions, derived spacing, inventory, and every deployment.
-- Invalid requests are rate-limited before expensive layout work.
-- All players share bounded per-tick preflight and planting budgets with
-  round-robin scheduling; at most eight planting batches run concurrently.
-- Progress heartbeats and a stall watchdog prevent permanent busy states.
-- A missing terminal message is recovered by a client-side heartbeat timeout.
+- One normal planting action walks to the clicked point and starts the batch;
+  there is no second action, custom crouching state, undo history, or request
+  cooldown.
+- The server validates request IDs, the active plantable, dimensions, derived
+  spacing, arrival distance, inventory, and every deployment.
+- All players share a bounded per-tick planting budget with round-robin
+  scheduling; at most eight planting batches run concurrently.
 - Plant metadata is resolved once for the current item instance and reused
   until that instance changes. Per-point validation does not repeatedly query
   deploy mode and spacing.
-- Plant queries and deployment callbacks run with instruction and wall-time
-  budgets. A pure-Lua runaway callback is interrupted and stops only the
-  current request. Slow native calls are logged after they return.
-- Deploy follows the native item boundary. If the callback cleanly rejects the
-  deployment before making a persistent result, that same item is returned to
-  its original container, player inventory, or the player's feet. If the
-  callback errors or creates a persistent result before reporting failure, the
-  state is treated as unknown and the detached source is consumed, so an error
-  cannot duplicate both the plant and its source item. The batch then stops and
-  logs the incident. The mod never synthesizes a replacement item.
+- Plant checks use DST's public `Deployable` methods directly. A callback error
+  stops the current batch and is logged; normal callbacks are not quarantined
+  or rejected for merely taking longer than a threshold.
+- Deployment follows `ACTIONS.DEPLOY`: remove one real inventory item, call
+  `Deploy`, and give that same still-valid item back after a clean rejection.
+  If the callback raises, a still-valid detached source is consumed before the
+  batch stops; if it already invalidated the item, the state is treated as
+  unknown. The mod never synthesizes a replacement item.
 - Players must remain near the original action point during execution.
 - Busy, timeout, extension, and internal failures appear as localized system
   messages. Distance, inventory shortage, and no-valid-position outcomes stay
   silent.
 - Server logs record rejected requests and failed batch summaries, including
   planted and blocked counts.
-- RPC, Action, StateGraph, prefab, and Lua module identifiers are namespaced.
+- RPC, Action, prefab, and Lua module identifiers are namespaced.
 - Original and custom character StateGraphs receive a compatible action
   handler.
 
@@ -165,10 +175,9 @@ Restart the world after Lua changes. Check
 
 ### 简介
 
-种植助手以鼠标所在的地皮为起点规划矩形种植阵列。系统根据当前物品的
-原生部署间距计算一个固定安全值，并均匀填充每块地皮。角色会实际移动到
-动作范围，只播放一次种植动作，随后由服务器把有效位置作为一个受限批次
-种下。
+种植助手以鼠标指针或手柄部署准星所在的地皮为起点规划矩形种植阵列。
+系统根据当前物品的原生部署间距计算一个固定安全值，并均匀填充每块地皮，
+随后由服务器把有效位置作为一个受限批次种下。
 
 遇到已有作物或其他阻挡时会跳过该点，并继续尝试同一个固定矩形中的后续
 候选位置，直到达到当前库存配额或耗尽阵列。
@@ -180,6 +189,8 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 
 ### 操作
 
+鼠标与键盘：
+
 1. 从物品栏拿起一个原生部署模式为 `PLANT` 的物品，使其成为鼠标活动
    物品。
 2. 把鼠标指向要作为阵列起点的地皮。
@@ -187,16 +198,24 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 4. 按住 `Alt` 滚动鼠标滚轮，调整列数。
 5. 按鼠标右键确认。
 
-默认阵列为 `1 × 1`。每个方向允许的候选数量由自动间距决定：间距为
-`1` 个世界单位时最多 `36` 株，间距为 `4/3` 时最多 `27` 株，间距为
-`2` 时最多 `18` 株，间距为 `4` 时最多 `9` 株。阵列宽度和高度分别
-不能超过 9 块地皮（36 个世界单位）。
+手柄：
 
-不再另设 81 株上限。实际消耗数量由库存和有效位置决定，`9 × 9` 地皮
-范围是单次布局的安全边界。
+1. 选中种植物并进入 DST 原生部署模式。
+2. 方向键上/下增加/减少行数。
+3. 方向键左/右减少/增加列数。
+4. 按标准交互键（默认 A）确认，按标准次要交互键（默认 B）取消。
 
-一次右键会记录种植计划。需要移动时，DST 会先让角色进入动作范围，再自动
-开始整批种植。角色不需要逐个走到每株作物的位置。
+HUD 会显示玩家当前实际映射的手柄按键，不写死 A/B 图标。
+
+默认阵列为 `1 × 1`。行数和列数都可以在 `1` 到 `9` 之间调整，因此单批
+最多包含 `81` 个候选种植位置。间距会根据当前种植物自动选择，阵列每个
+方向的占地范围仍不能超过 `9` 块地皮（`36` 个世界单位）。
+
+实际消耗数量由库存和有效位置决定。
+
+一次右键会记录鼠标种植计划。需要移动时，DST 会先让角色进入动作范围，
+再自动开始整批种植。手柄确认使用原生部署准星的近距离目标，并经过相同的
+服务端距离校验。角色不需要逐个走到每株作物的位置。
 
 种植助手不会覆写左键，原版物品栏丢弃和移动行为仍然可用。
 
@@ -220,9 +239,9 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 - 默认列数
 - GP Grid 透明度
 
-间距始终自动计算。阵列以鼠标所在的地皮为基准，根据当前物品的原生部署
-间距得到一个固定安全值，均匀填充每块 `4 × 4` 地皮，并且不会随当前
-行列变化。
+间距始终自动计算。阵列以鼠标指针或手柄部署准星所在的地皮为基准，根据
+当前物品的原生部署间距得到一个固定安全值，均匀填充每块 `4 × 4` 地皮，
+并且不会随当前行列变化。
 
 `GP Grid 透明度`只改变种植助手预览周围的 Geometric Placement Grid，
 不会修改 Geometric Placement 的全局颜色、作物幽灵或地皮边框。
@@ -261,27 +280,26 @@ Mosswork 和种植助手都使用 `all_clients_require_mod = true`。服务器�
 ### 联机安全
 
 - 客户端输入和预览只负责预测。
-- 服务端校验请求 ID、活动种植物、距离、行列、自动计算的间距、库存和
+- 单个普通种植动作会走到点击点并启动批次；不再存在第二动作、自定义
+  蹲下状态、撤销历史或请求冷却。
+- 服务端校验请求 ID、活动种植物、行列、自动间距、到达距离、库存和
   每次部署。
-- 无效请求会在高成本布局计算前进入限流。
-- 所有玩家通过轮转调度共享固定的单帧预检与种植预算，同时执行的种植
-  批次最多为 8 个。
-- 进度心跳和停滞看门狗避免永久 busy。
-- 即使终止消息丢失，客户端也会通过心跳超时自动解除 busy。
+- 所有玩家通过轮转调度共享固定的单帧种植预算，同时执行的种植批次
+  最多为 8 个。
 - 种植物元数据只针对当前物品实例解析一次并复用，只有实例变化时才重新
   解析。逐点校验不会重复查询部署模式和间距。
-- 种植物查询和部署回调都受指令数与执行时间预算约束。纯 Lua 失控循环会被
-  中断，并且只终止当前请求；无法提前中断的慢速原生调用会在返回后记录。
-- Deploy 遵循原生物品边界。回调在生成持久结果前明确返回失败时，会尝试归还
-  同一个原物品；如果回调抛错，或先生成持久结果再返回失败，则状态按未知处理
-  并消耗已取出的原物品，避免作物与来源物品同时存在。随后批次停止并记录该
-  情况。模组绝不会合成替代物品。
+- 种植检查直接调用 DST 公开的 `Deployable` 方法。回调报错会停止并记录
+  当前批次；正常回调不会因为耗时超过阈值而被隔离或拒绝。
+- Deploy 对齐 `ACTIONS.DEPLOY`：从真实库存移除一件物品后调用 `Deploy`；
+  如果明确失败且原物品仍有效，就把同一个物品归还。若回调抛错，会先消耗
+  仍有效的已取出物品再停止；若物品已经失效，状态按未知处理。模组绝不会
+  合成替代物品。
 - 执行期间玩家必须留在原动作点附近。
 - 繁忙、超时、扩展回调和内部故障会以当前语言的系统消息通知对应玩家；
   距离过远、库存不足和无有效位置保持静默。
 - 服务端日志会记录被拒绝的请求和失败批次摘要，并包含成功种植与阻挡
   数量。
-- RPC、Action、StateGraph、Prefab 和 Lua 模块标识均使用命名空间。
+- RPC、Action、Prefab 和 Lua 模块标识均使用命名空间。
 - 原版和自定义人物 StateGraph 都会安装兼容的动作处理器。
 
 ### 本地开发
